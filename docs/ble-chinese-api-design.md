@@ -70,11 +70,43 @@ implementation(project(":ble_chinese_api"))
 | --- | --- |
 | 蓝牙通信器 | library 对业务 App 暴露的主入口 |
 | 通信配置 | service UUID、characteristic UUID、厂商编号、设备名等配置 |
-| 连接状态 | 当前 BLE 通信是否未启动、扫描中、广播中、已连接、出错 |
+| 连接状态 | 当前 BLE 通信是否未启动、启动中、扫描广播中、已连接、出错 |
 | 邻机 | 被发现或已连接的附近设备 |
 | 业务消息 | BBS 帖子、游戏事件等由业务 App 定义的消息 |
 | 传输帧 | library 内部用于 BLE 传输的统一包装格式 |
 | 消息编解码器 | 业务消息与字节数组之间的转换接口 |
+
+## 消息模型
+
+本设计中的 `消息` 是业务层泛型，不是某一种固定协议。library 只要求业务 App 提供 `消息编解码器<消息>`，用于在业务消息和字节数组之间转换。
+
+```text
+业务 App 消息
+  -> 消息编解码器
+  -> ByteArray 载荷
+  -> library 传输帧
+  -> BLE 写入
+```
+
+接收方向相反：
+
+```text
+BLE 写入
+  -> library 传输帧
+  -> ByteArray 载荷
+  -> 消息编解码器
+  -> 业务 App 消息
+```
+
+因此，`帖子消息` 和 `对局消息` 是两个不同业务 App 对泛型 `消息` 的具体选择：
+
+| 场景 | 泛型 `消息` 的具体类型 | library 是否理解业务含义 |
+| --- | --- | --- |
+| BBS | `帖子消息` | 否，只负责传输 |
+| 剪刀石头布 | `对局消息` | 否，只负责传输 |
+| 最小示例 App | `文本消息` | 否，只负责传输 |
+
+这种关系可以避免 BLE library 绑定 BBS 或游戏规则。BBS 里的排序、去重、入库由 BBS App 处理；剪刀石头布里的胜负判断、回合状态由游戏 App 处理。
 
 ## 中文公开 API 草案
 
@@ -152,18 +184,20 @@ interface 蓝牙通信器接口<消息> {
 
 ```kotlin
 data class 蓝牙通信配置(
-    val 服务UUID: UUID,
-    val 写入UUID: UUID,
-    val 通知UUID: UUID? = null,
+    val 服务UUID: String,
+    val 写入UUID: String,
+    val 通知UUID: String? = null,
     val 厂商编号: Int,
     val 应用标记: String
 )
 ```
 
+对外配置使用字符串形式的 UUID，便于业务 App 从配置文件或文档复制。library 内部负责校验并转换为 Android BLE API 需要的 `UUID`。
+
 ```kotlin
 interface 消息编解码器<消息> {
     fun 编码(消息: 消息): ByteArray
-    fun 解码(数据: ByteArray): 消息
+    fun 解码(数据: ByteArray): Result<消息>
 }
 ```
 
@@ -176,6 +210,22 @@ sealed interface 连接状态 {
     data class 出错(val 原因: String) : 连接状态
 }
 ```
+
+```kotlin
+sealed interface 启动结果 {
+    data object 成功 : 启动结果
+    data class 失败(val 原因: String) : 启动结果
+}
+```
+
+```kotlin
+sealed interface 发送结果 {
+    data object 已写入 : 发送结果
+    data class 失败(val 原因: String) : 发送结果
+}
+```
+
+`发送结果.已写入` 只表示消息已经交给当前可写连接写出，不表示对端业务层已经处理完成。是否需要业务级确认包、重试或顺序保证，由具体业务 App 决定；library 第一版不强制提供。
 
 ```kotlin
 data class 邻机状态(
@@ -204,6 +254,12 @@ data class 帖子消息(
 
 收到消息后，BBS App 自己决定是否写入 Room、如何排序、如何去重。
 
+在这个场景中，通信器泛型可以是：
+
+```kotlin
+蓝牙通信器接口<帖子消息>
+```
+
 ### 剪刀石头布
 
 剪刀石头布可以把选择、揭示、新局等事件定义为业务消息：
@@ -217,6 +273,12 @@ sealed interface 对局消息 {
 ```
 
 library 不判断输赢，只负责把这些事件送到对端。
+
+在这个场景中，通信器泛型可以是：
+
+```kotlin
+蓝牙通信器接口<对局消息>
+```
 
 ## 帧格式建议
 
@@ -233,6 +295,8 @@ data class 传输帧(
 ```
 
 第一版可以先使用 JSON 编码，便于调试。后续如需提高效率，再考虑 CBOR、protobuf 或自定义二进制格式。
+
+`传输帧.类型` 用于标识载荷属于哪类业务消息，例如 `bbs.post`、`rps.choice`、`rps.reveal`。library 可以保留该字段用于调试和路由，但不解释其业务含义。
 
 ## 错误与边界
 
