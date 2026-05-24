@@ -112,8 +112,9 @@ class 蓝牙通信器<消息>(
     private var 可写特征: BluetoothGattCharacteristic? = null
     private var 广播回调: AdvertiseCallback? = null
     private var 扫描回调: ScanCallback? = null
-    private var 当前Gatt: BluetoothGatt? = null
-    private var 当前写入特征: BluetoothGattCharacteristic? = null
+    private var 已启动 = false
+    private val Gatt连接 = ConcurrentHashMap<String, BluetoothGatt>()
+    private val 可写连接 = ConcurrentHashMap<String, 可写邻机连接>()
 
     private val 可变连接状态流 = MutableStateFlow<连接状态>(连接状态.未启动)
     private val 可变邻机状态流 = MutableStateFlow<List<邻机状态>>(emptyList())
@@ -127,6 +128,8 @@ class 蓝牙通信器<消息>(
     override val 收到消息流: SharedFlow<消息> = 可变收到消息流
 
     override suspend fun 启动(): 启动结果 {
+        if (已启动) return 启动结果.成功
+
         val 能力错误 = 检查启动条件()
         if (能力错误 != null) {
             可变连接状态流.value = 连接状态.出错(能力错误)
@@ -138,6 +141,7 @@ class 蓝牙通信器<消息>(
             启动Gatt服务端()
             启动广播()
             启动扫描()
+            已启动 = true
             可变连接状态流.value = 连接状态.扫描广播中
             启动结果.成功
         }.getOrElse { 错误 ->
@@ -150,13 +154,14 @@ class 蓝牙通信器<消息>(
     override suspend fun 停止() {
         runCatching { 蓝牙适配器?.bluetoothLeScanner?.stopScan(扫描回调) }
         runCatching { 蓝牙适配器?.bluetoothLeAdvertiser?.stopAdvertising(广播回调) }
-        runCatching { 当前Gatt?.close() }
+        Gatt连接.values.forEach { gatt -> runCatching { gatt.close() } }
         runCatching { Gatt服务端?.close() }
-        当前Gatt = null
-        当前写入特征 = null
+        Gatt连接.clear()
+        可写连接.clear()
         Gatt服务端 = null
         广播回调 = null
         扫描回调 = null
+        已启动 = false
         已发现邻机.clear()
         可变邻机状态流.value = emptyList()
         可变连接状态流.value = 连接状态.未启动
@@ -168,29 +173,38 @@ class 蓝牙通信器<消息>(
             return 发送结果.失败("消息过大：${载荷.size} 字节，当前上限 ${配置.最大载荷字节数} 字节")
         }
 
-        val gatt = 当前Gatt ?: return 发送结果.失败("当前没有可写连接")
-        val characteristic = 当前写入特征 ?: return 发送结果.失败("当前没有可写特征")
+        val 连接列表 = 可写连接.values.toList()
+        if (连接列表.isEmpty()) return 发送结果.失败("当前没有可写连接")
 
-        return runCatching {
+        val 失败原因 = mutableListOf<String>()
+        for (连接 in 连接列表) {
+            val 结果 = 写入到邻机(连接, 载荷)
+            if (结果 == 发送结果.已写入) return 结果
+            if (结果 is 发送结果.失败) 失败原因 += "${连接.设备编号}:${结果.原因}"
+        }
+        return 发送结果.失败(失败原因.joinToString("; ").ifBlank { "写入请求未被系统接受" })
+    }
+
+    private fun 写入到邻机(连接: 可写邻机连接, 载荷: ByteArray): 发送结果 =
+        runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                val 状态 = gatt.writeCharacteristic(
-                    characteristic,
+                val 状态 = 连接.gatt.writeCharacteristic(
+                    连接.characteristic,
                     载荷,
                     BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
                 )
                 if (状态 == BluetoothGatt.GATT_SUCCESS) 发送结果.已写入 else 发送结果.失败("写入失败：$状态")
             } else {
                 @Suppress("DEPRECATION")
-                characteristic.value = 载荷
+                连接.characteristic.value = 载荷
                 @Suppress("DEPRECATION")
-                if (gatt.writeCharacteristic(characteristic)) {
+                if (连接.gatt.writeCharacteristic(连接.characteristic)) {
                     发送结果.已写入
                 } else {
                     发送结果.失败("写入请求未被系统接受")
                 }
             }
         }.getOrElse { 发送结果.失败(it.message ?: it::class.java.simpleName) }
-    }
 
     @SuppressLint("MissingPermission")
     private fun 启动Gatt服务端() {
@@ -261,8 +275,9 @@ class 蓝牙通信器<消息>(
         val 设备编号 = device.address ?: return
         已发现邻机[设备编号] = 邻机记录(设备编号, 名称, 已连接 = false, 可写入 = false)
         发布邻机状态()
-        if (当前Gatt == null) {
-            当前Gatt = device.connectGatt(应用上下文, false, Gatt客户端回调, BluetoothDevice.TRANSPORT_LE)
+        if (Gatt连接.containsKey(设备编号).not()) {
+            Gatt连接[设备编号] =
+                device.connectGatt(应用上下文, false, Gatt客户端回调, BluetoothDevice.TRANSPORT_LE)
         }
     }
 
@@ -292,7 +307,12 @@ class 蓝牙通信器<消息>(
                 gatt.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 标记连接(gatt.device, 已连接 = false, 可写入 = false)
-                当前写入特征 = null
+                val 设备编号 = gatt.device?.address
+                if (设备编号 != null) {
+                    可写连接.remove(设备编号)
+                    Gatt连接.remove(设备编号)
+                }
+                gatt.close()
             }
         }
 
@@ -300,8 +320,11 @@ class 蓝牙通信器<消息>(
             if (status != BluetoothGatt.GATT_SUCCESS) return
             val characteristic = gatt.getService(服务UUID)?.getCharacteristic(写入UUID)
             if (characteristic != null) {
-                当前写入特征 = characteristic
-                标记连接(gatt.device, 已连接 = true, 可写入 = true)
+                val 设备编号 = gatt.device?.address
+                if (设备编号 != null) {
+                    可写连接[设备编号] = 可写邻机连接(设备编号, gatt, characteristic)
+                    标记连接(gatt.device, 已连接 = true, 可写入 = true)
+                }
             }
         }
     }
@@ -378,5 +401,11 @@ class 蓝牙通信器<消息>(
         val 已连接: Boolean,
         val 可写入: Boolean,
         val 最近发现时间: Long = System.currentTimeMillis(),
+    )
+
+    private data class 可写邻机连接(
+        val 设备编号: String,
+        val gatt: BluetoothGatt,
+        val characteristic: BluetoothGattCharacteristic,
     )
 }

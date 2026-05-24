@@ -39,8 +39,8 @@ class MainActivity : Activity() {
         通信器 = 蓝牙通信器(
             context = this,
             配置 = 蓝牙通信配置(
-                服务UUID = "9a31b0a1-7d44-4b1a-8f23-1e9a2e0d6c01",
-                写入UUID = "0c8b7f0b-7e8a-4d9f-9d25-6c3a8b28d4f2",
+                服务UUID = "f77d0a4b-2b74-4e43-a9de-6cb27a0f7a91",
+                写入UUID = "1bb5f2d4-9f73-4f47-a351-9e0d2b3517cf",
                 厂商编号 = 0x1234,
                 应用标记 = "ble-chinese-api-sample",
             ),
