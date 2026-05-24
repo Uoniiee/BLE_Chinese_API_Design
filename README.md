@@ -8,6 +8,8 @@
 
 - [BLE 中文 API 与 Android Library Module 设计](docs/ble-chinese-api-design.md)
 - [最小示例 App 草案](docs/minimal-sample-app.md)
+- [Library 使用说明](docs/library-usage.md)
+- [Library 发布说明](docs/library-publishing.md)
 
 ## 设计范围
 
@@ -29,3 +31,16 @@
 - 最小示例 App
 - 简要使用文档
 - library 发布文档
+
+## 当前代码
+
+第二阶段已新增：
+
+- `:ble_chinese_api`：Android BLE 中文 API library module
+- `:sample_app`：最小文本收发示例 App
+
+构建命令：
+
+```powershell
+.\gradlew.bat --no-daemon --console=plain :ble_chinese_api:assembleDebug :sample_app:assembleDebug
+```
