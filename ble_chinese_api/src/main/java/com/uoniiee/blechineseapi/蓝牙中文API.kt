@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -44,6 +45,7 @@ data class 蓝牙通信配置(
     val 厂商编号: Int,
     val 应用标记: String,
     val 最大载荷字节数: Int = 180,
+    val 启用中继转发: Boolean = true,
 )
 
 sealed interface 连接状态 {
@@ -88,6 +90,7 @@ interface 蓝牙通信器接口<消息> {
     val 连接状态流: StateFlow<连接状态>
     val 邻机状态流: StateFlow<List<邻机状态>>
     val 收到消息流: SharedFlow<消息>
+    val 调试事件流: SharedFlow<String>
 
     suspend fun 启动(): 启动结果
     suspend fun 停止()
@@ -118,6 +121,7 @@ class 蓝牙通信器<消息>(
     private val Gatt连接 = ConcurrentHashMap<String, BluetoothGatt>()
     private val 可写连接 = ConcurrentHashMap<String, 可写邻机连接>()
     private val 已订阅设备 = ConcurrentHashMap<String, BluetoothDevice>()
+    private val 已处理消息编号 = ConcurrentHashMap<String, Long>()
 
     private val 可变连接状态流 = MutableStateFlow<连接状态>(连接状态.未启动)
     private val 可变邻机状态流 = MutableStateFlow<List<邻机状态>>(emptyList())
@@ -125,31 +129,44 @@ class 蓝牙通信器<消息>(
         replay = 0,
         extraBufferCapacity = 32,
     )
+    private val 可变调试事件流 = MutableSharedFlow<String>(
+        replay = 8,
+        extraBufferCapacity = 64,
+    )
 
     override val 连接状态流: StateFlow<连接状态> = 可变连接状态流
     override val 邻机状态流: StateFlow<List<邻机状态>> = 可变邻机状态流
     override val 收到消息流: SharedFlow<消息> = 可变收到消息流
+    override val 调试事件流: SharedFlow<String> = 可变调试事件流
 
     override suspend fun 启动(): 启动结果 {
-        if (已启动) return 启动结果.成功
+        if (已启动) {
+            记录调试事件("已在运行，先清理旧通信资源")
+            停止()
+        }
 
         val 能力错误 = 检查启动条件()
         if (能力错误 != null) {
             可变连接状态流.value = 连接状态.出错(能力错误)
+            记录调试事件("启动前检查失败：$能力错误")
             return 启动结果.失败(能力错误)
         }
 
         可变连接状态流.value = 连接状态.启动中
+        记录调试事件("开始启动通信")
         return runCatching {
             启动Gatt服务端()
             启动广播()
             启动扫描()
             已启动 = true
             可变连接状态流.value = 连接状态.扫描广播中
+            记录调试事件("通信已启动：GATT 服务端、广播、扫描均已请求启动")
             启动结果.成功
         }.getOrElse { 错误 ->
             val 原因 = 错误.message ?: 错误::class.java.simpleName
             可变连接状态流.value = 连接状态.出错(原因)
+            记录调试事件("启动失败：$原因")
+            停止()
             启动结果.失败(原因)
         }
     }
@@ -162,6 +179,7 @@ class 蓝牙通信器<消息>(
         Gatt连接.clear()
         可写连接.clear()
         已订阅设备.clear()
+        已处理消息编号.clear()
         Gatt服务端 = null
         广播回调 = null
         扫描回调 = null
@@ -169,10 +187,12 @@ class 蓝牙通信器<消息>(
         已发现邻机.clear()
         可变邻机状态流.value = emptyList()
         可变连接状态流.value = 连接状态.未启动
+        记录调试事件("通信已停止")
     }
 
     override suspend fun 发送(消息: 消息): 发送结果 {
         val 载荷 = 编解码器.编码(消息)
+        记录调试事件("准备发送：${载荷.size} 字节")
         if (载荷.size > 配置.最大载荷字节数) {
             return 发送结果.失败("消息过大：${载荷.size} 字节，当前上限 ${配置.最大载荷字节数} 字节")
         }
@@ -182,24 +202,32 @@ class 蓝牙通信器<消息>(
         var 已成功发送 = false
 
         for (连接 in 连接列表) {
-            val 结果 = 写入到邻机(连接, 载荷)
+            val 结果 = 写入到邻机(连接, 载荷, 排除设备编号 = null)
             if (结果 == 发送结果.已写入) 已成功发送 = true
             if (结果 is 发送结果.失败) 失败原因 += "${连接.设备编号}:${结果.原因}"
         }
 
-        val 通知结果 = 通知已订阅邻机(载荷)
+        val 通知结果 = 通知已订阅邻机(载荷, 排除设备编号 = null)
         if (通知结果 == 发送结果.已写入) 已成功发送 = true
         if (通知结果 is 发送结果.失败) 失败原因 += "通知:${通知结果.原因}"
 
         return if (已成功发送) {
+            记录调试事件("发送请求已写出")
             发送结果.已写入
         } else {
-            发送结果.失败(失败原因.joinToString("; ").ifBlank { "当前没有可写连接或通知订阅" })
+            val 原因 = 失败原因.joinToString("; ").ifBlank { "当前没有可写连接或通知订阅" }
+            记录调试事件("发送失败：$原因")
+            发送结果.失败(原因)
         }
     }
 
-    private fun 写入到邻机(连接: 可写邻机连接, 载荷: ByteArray): 发送结果 =
+    private fun 写入到邻机(
+        连接: 可写邻机连接,
+        载荷: ByteArray,
+        排除设备编号: String?,
+    ): 发送结果 =
         runCatching {
+            if (连接.设备编号 == 排除设备编号) return@runCatching 发送结果.失败("跳过来源设备")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val 状态 = 连接.gatt.writeCharacteristic(
                     连接.characteristic,
@@ -220,10 +248,13 @@ class 蓝牙通信器<消息>(
         }.getOrElse { 发送结果.失败(it.message ?: it::class.java.simpleName) }
 
     @SuppressLint("MissingPermission")
-    private fun 通知已订阅邻机(载荷: ByteArray): 发送结果 {
+    private fun 通知已订阅邻机(载荷: ByteArray, 排除设备编号: String?): 发送结果 {
         val 服务端 = Gatt服务端 ?: return 发送结果.失败("GATT 服务端未启动")
         val 特征 = 可写特征 ?: return 发送结果.失败("通知特征不存在")
-        val 设备列表 = 已订阅设备.values.toList()
+        val 设备列表 = 已订阅设备
+            .filterKeys { it != 排除设备编号 }
+            .values
+            .toList()
         if (设备列表.isEmpty()) return 发送结果.失败("没有已订阅通知的邻机")
 
         var 成功数量 = 0
@@ -261,6 +292,7 @@ class 蓝牙通信器<消息>(
         服务端.addService(服务)
         Gatt服务端 = 服务端
         可写特征 = 特征
+        记录调试事件("GATT 服务端已创建")
     }
 
     @SuppressLint("MissingPermission")
@@ -278,6 +310,11 @@ class 蓝牙通信器<消息>(
         val callback = object : AdvertiseCallback() {
             override fun onStartFailure(errorCode: Int) {
                 可变连接状态流.value = 连接状态.出错("广播启动失败：$errorCode")
+                记录调试事件("广播启动失败：$errorCode")
+            }
+
+            override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
+                记录调试事件("广播启动成功")
             }
         }
         advertiser.startAdvertising(settings, data, callback)
@@ -304,10 +341,12 @@ class 蓝牙通信器<消息>(
 
             override fun onScanFailed(errorCode: Int) {
                 可变连接状态流.value = 连接状态.出错("扫描失败：$errorCode")
+                记录调试事件("扫描失败：$errorCode")
             }
         }
         scanner.startScan(listOf(filter), settings, callback)
         扫描回调 = callback
+        记录调试事件("扫描已启动")
     }
 
     @SuppressLint("MissingPermission")
@@ -315,10 +354,12 @@ class 蓝牙通信器<消息>(
         if (device == null) return
         val 设备编号 = device.address ?: return
         已发现邻机[设备编号] = 邻机记录(设备编号, 名称, 已连接 = false, 可写入 = false)
+        记录调试事件("发现邻机：${名称 ?: "未知"} $设备编号")
         发布邻机状态()
         if (Gatt连接.containsKey(设备编号).not()) {
             Gatt连接[设备编号] =
                 device.connectGatt(应用上下文, false, Gatt客户端回调, BluetoothDevice.TRANSPORT_LE)
+            记录调试事件("请求连接邻机：$设备编号")
         }
     }
 
@@ -333,7 +374,7 @@ class 蓝牙通信器<消息>(
             value: ByteArray?,
         ) {
             if (characteristic?.uuid == 写入UUID && value != null) {
-                处理收到载荷(value)
+                处理收到载荷(value, 来源设备编号 = device?.address)
             }
             if (responseNeeded) {
                 Gatt服务端?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
@@ -353,9 +394,11 @@ class 蓝牙通信器<消息>(
                 val 设备编号 = device.address
                 if (value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) {
                     已订阅设备[设备编号] = device
+                    记录调试事件("邻机已订阅通知：$设备编号")
                     标记连接(device, 已连接 = true, 可写入 = true)
                 } else if (value.contentEquals(BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE)) {
                     已订阅设备.remove(设备编号)
+                    记录调试事件("邻机取消通知订阅：$设备编号")
                     标记连接(device, 已连接 = true, 可写入 = false)
                 }
             }
@@ -368,9 +411,11 @@ class 蓝牙通信器<消息>(
     private val Gatt客户端回调 = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
+                记录调试事件("已连接邻机：${gatt.device?.address}")
                 标记连接(gatt.device, 已连接 = true, 可写入 = false)
                 gatt.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                记录调试事件("邻机已断开：${gatt.device?.address}")
                 标记连接(gatt.device, 已连接 = false, 可写入 = false)
                 val 设备编号 = gatt.device?.address
                 if (设备编号 != null) {
@@ -388,9 +433,12 @@ class 蓝牙通信器<消息>(
                 val 设备编号 = gatt.device?.address
                 if (设备编号 != null) {
                     可写连接[设备编号] = 可写邻机连接(设备编号, gatt, characteristic)
+                    记录调试事件("发现可写特征，准备订阅通知：$设备编号")
                     订阅通知(gatt, characteristic)
                     标记连接(gatt.device, 已连接 = true, 可写入 = true)
                 }
+            } else {
+                记录调试事件("未找到可写特征：${gatt.device?.address}")
             }
         }
 
@@ -400,7 +448,7 @@ class 蓝牙通信器<消息>(
             value: ByteArray,
         ) {
             if (characteristic.uuid == 写入UUID) {
-                处理收到载荷(value)
+                处理收到载荷(value, 来源设备编号 = gatt.device?.address)
             }
         }
 
@@ -410,7 +458,7 @@ class 蓝牙通信器<消息>(
             characteristic: BluetoothGattCharacteristic,
         ) {
             if (characteristic.uuid == 写入UUID) {
-                处理收到载荷(characteristic.value)
+                处理收到载荷(characteristic.value, 来源设备编号 = gatt.device?.address)
             }
         }
     }
@@ -419,6 +467,7 @@ class 蓝牙通信器<消息>(
     private fun 订阅通知(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
         gatt.setCharacteristicNotification(characteristic, true)
         val 描述符 = characteristic.getDescriptor(通知描述符UUID) ?: return
+        记录调试事件("写入通知订阅描述符：${gatt.device?.address}")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             gatt.writeDescriptor(描述符, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
         } else {
@@ -429,10 +478,35 @@ class 蓝牙通信器<消息>(
         }
     }
 
-    private fun 处理收到载荷(载荷: ByteArray) {
+    private fun 处理收到载荷(载荷: ByteArray, 来源设备编号: String?) {
+        val 消息编号 = 载荷.消息编号()
+        if (已处理消息编号.putIfAbsent(消息编号, System.currentTimeMillis()) != null) return
+        清理旧消息编号()
+
         编解码器.解码(载荷).onSuccess { 消息 ->
             作用域.launch { 可变收到消息流.emit(消息) }
         }
+        if (配置.启用中继转发) {
+            中继转发(载荷, 来源设备编号)
+        }
+    }
+
+    private fun 中继转发(载荷: ByteArray, 来源设备编号: String?) {
+        可写连接.values.forEach { 连接 ->
+            写入到邻机(连接, 载荷, 排除设备编号 = 来源设备编号)
+        }
+        通知已订阅邻机(载荷, 排除设备编号 = 来源设备编号)
+    }
+
+    private fun ByteArray.消息编号(): String {
+        val 摘要 = MessageDigest.getInstance("SHA-256").digest(this)
+        return 摘要.joinToString("") { "%02x".format(it) }
+    }
+
+    private fun 清理旧消息编号() {
+        if (已处理消息编号.size < 512) return
+        val 截止时间 = System.currentTimeMillis() - 5 * 60 * 1000
+        已处理消息编号.entries.removeIf { it.value < 截止时间 }
     }
 
     private fun 标记连接(device: BluetoothDevice?, 已连接: Boolean, 可写入: Boolean) {
@@ -493,6 +567,10 @@ class 蓝牙通信器<消息>(
 
     fun 释放() {
         作用域.cancel()
+    }
+
+    private fun 记录调试事件(内容: String) {
+        可变调试事件流.tryEmit(内容)
     }
 
     private data class 邻机记录(

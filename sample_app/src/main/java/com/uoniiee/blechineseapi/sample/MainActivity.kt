@@ -27,6 +27,10 @@ import kotlinx.coroutines.runBlocking
 
 class MainActivity : Activity() {
 
+    private companion object {
+        const val 示例版本 = "v0.3.0-debug"
+    }
+
     private val 作用域 = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var 通信器: 蓝牙通信器<String>
     private lateinit var 状态文本: TextView
@@ -73,6 +77,7 @@ class MainActivity : Activity() {
             text = "启动通信"
             setOnClickListener {
                 作用域.launch {
+                    添加日志("准备启动通信；会自动清理旧通信资源")
                     val 结果 = 通信器.启动()
                     添加日志("启动结果：$结果")
                 }
@@ -126,6 +131,7 @@ class MainActivity : Activity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 48, 32, 32)
+            addView(TextView(this@MainActivity).apply { text = "BLE 中文 API 示例 $示例版本" })
             addView(状态文本)
             addView(邻机文本)
             addView(顶部)
@@ -148,6 +154,11 @@ class MainActivity : Activity() {
         作用域.launch {
             通信器.收到消息流.collect { 消息 ->
                 添加日志("对端：$消息")
+            }
+        }
+        作用域.launch {
+            通信器.调试事件流.collect { 事件 ->
+                添加日志("调试：$事件")
             }
         }
     }
