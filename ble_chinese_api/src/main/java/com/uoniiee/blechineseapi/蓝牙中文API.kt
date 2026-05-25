@@ -7,6 +7,7 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothGattServer
 import android.bluetooth.BluetoothGattServerCallback
 import android.bluetooth.BluetoothGattService
@@ -106,6 +107,7 @@ class 蓝牙通信器<消息>(
     private val 蓝牙适配器: BluetoothAdapter? = 蓝牙管理器.adapter
     private val 服务UUID by lazy { UUID.fromString(配置.服务UUID) }
     private val 写入UUID by lazy { UUID.fromString(配置.写入UUID) }
+    private val 通知描述符UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     private val 已发现邻机 = ConcurrentHashMap<String, 邻机记录>()
 
     private var Gatt服务端: BluetoothGattServer? = null
@@ -115,6 +117,7 @@ class 蓝牙通信器<消息>(
     private var 已启动 = false
     private val Gatt连接 = ConcurrentHashMap<String, BluetoothGatt>()
     private val 可写连接 = ConcurrentHashMap<String, 可写邻机连接>()
+    private val 已订阅设备 = ConcurrentHashMap<String, BluetoothDevice>()
 
     private val 可变连接状态流 = MutableStateFlow<连接状态>(连接状态.未启动)
     private val 可变邻机状态流 = MutableStateFlow<List<邻机状态>>(emptyList())
@@ -158,6 +161,7 @@ class 蓝牙通信器<消息>(
         runCatching { Gatt服务端?.close() }
         Gatt连接.clear()
         可写连接.clear()
+        已订阅设备.clear()
         Gatt服务端 = null
         广播回调 = null
         扫描回调 = null
@@ -174,15 +178,24 @@ class 蓝牙通信器<消息>(
         }
 
         val 连接列表 = 可写连接.values.toList()
-        if (连接列表.isEmpty()) return 发送结果.失败("当前没有可写连接")
-
         val 失败原因 = mutableListOf<String>()
+        var 已成功发送 = false
+
         for (连接 in 连接列表) {
             val 结果 = 写入到邻机(连接, 载荷)
-            if (结果 == 发送结果.已写入) return 结果
+            if (结果 == 发送结果.已写入) 已成功发送 = true
             if (结果 is 发送结果.失败) 失败原因 += "${连接.设备编号}:${结果.原因}"
         }
-        return 发送结果.失败(失败原因.joinToString("; ").ifBlank { "写入请求未被系统接受" })
+
+        val 通知结果 = 通知已订阅邻机(载荷)
+        if (通知结果 == 发送结果.已写入) 已成功发送 = true
+        if (通知结果 is 发送结果.失败) 失败原因 += "通知:${通知结果.原因}"
+
+        return if (已成功发送) {
+            发送结果.已写入
+        } else {
+            发送结果.失败(失败原因.joinToString("; ").ifBlank { "当前没有可写连接或通知订阅" })
+        }
     }
 
     private fun 写入到邻机(连接: 可写邻机连接, 载荷: ByteArray): 发送结果 =
@@ -207,15 +220,43 @@ class 蓝牙通信器<消息>(
         }.getOrElse { 发送结果.失败(it.message ?: it::class.java.simpleName) }
 
     @SuppressLint("MissingPermission")
+    private fun 通知已订阅邻机(载荷: ByteArray): 发送结果 {
+        val 服务端 = Gatt服务端 ?: return 发送结果.失败("GATT 服务端未启动")
+        val 特征 = 可写特征 ?: return 发送结果.失败("通知特征不存在")
+        val 设备列表 = 已订阅设备.values.toList()
+        if (设备列表.isEmpty()) return 发送结果.失败("没有已订阅通知的邻机")
+
+        var 成功数量 = 0
+        for (设备 in 设备列表) {
+            val 成功 = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                服务端.notifyCharacteristicChanged(设备, 特征, false, 载荷) == BluetoothGatt.GATT_SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                特征.value = 载荷
+                @Suppress("DEPRECATION")
+                服务端.notifyCharacteristicChanged(设备, 特征, false)
+            }
+            if (成功) 成功数量 += 1
+        }
+
+        return if (成功数量 > 0) 发送结果.已写入 else 发送结果.失败("通知请求未被系统接受")
+    }
+
+    @SuppressLint("MissingPermission")
     private fun 启动Gatt服务端() {
         val 服务端 = 蓝牙管理器.openGattServer(应用上下文, Gatt服务端回调)
             ?: error("无法创建 GATT 服务端")
         val 服务 = BluetoothGattService(服务UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
         val 特征 = BluetoothGattCharacteristic(
             写入UUID,
-            BluetoothGattCharacteristic.PROPERTY_WRITE,
+            BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_NOTIFY,
             BluetoothGattCharacteristic.PERMISSION_WRITE,
         )
+        val 通知描述符 = BluetoothGattDescriptor(
+            通知描述符UUID,
+            BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE,
+        )
+        特征.addDescriptor(通知描述符)
         服务.addCharacteristic(特征)
         服务端.addService(服务)
         Gatt服务端 = 服务端
@@ -298,6 +339,30 @@ class 蓝牙通信器<消息>(
                 Gatt服务端?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
             }
         }
+
+        override fun onDescriptorWriteRequest(
+            device: BluetoothDevice?,
+            requestId: Int,
+            descriptor: BluetoothGattDescriptor?,
+            preparedWrite: Boolean,
+            responseNeeded: Boolean,
+            offset: Int,
+            value: ByteArray?,
+        ) {
+            if (descriptor?.uuid == 通知描述符UUID && device != null) {
+                val 设备编号 = device.address
+                if (value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) {
+                    已订阅设备[设备编号] = device
+                    标记连接(device, 已连接 = true, 可写入 = true)
+                } else if (value.contentEquals(BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE)) {
+                    已订阅设备.remove(设备编号)
+                    标记连接(device, 已连接 = true, 可写入 = false)
+                }
+            }
+            if (responseNeeded) {
+                Gatt服务端?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
+            }
+        }
     }
 
     private val Gatt客户端回调 = object : BluetoothGattCallback() {
@@ -323,9 +388,44 @@ class 蓝牙通信器<消息>(
                 val 设备编号 = gatt.device?.address
                 if (设备编号 != null) {
                     可写连接[设备编号] = 可写邻机连接(设备编号, gatt, characteristic)
+                    订阅通知(gatt, characteristic)
                     标记连接(gatt.device, 已连接 = true, 可写入 = true)
                 }
             }
+        }
+
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+        ) {
+            if (characteristic.uuid == 写入UUID) {
+                处理收到载荷(value)
+            }
+        }
+
+        @Suppress("DEPRECATION")
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+        ) {
+            if (characteristic.uuid == 写入UUID) {
+                处理收到载荷(characteristic.value)
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun 订阅通知(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+        gatt.setCharacteristicNotification(characteristic, true)
+        val 描述符 = characteristic.getDescriptor(通知描述符UUID) ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            gatt.writeDescriptor(描述符, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        } else {
+            @Suppress("DEPRECATION")
+            描述符.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            @Suppress("DEPRECATION")
+            gatt.writeDescriptor(描述符)
         }
     }
 
