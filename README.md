@@ -39,6 +39,8 @@
 - `:ble_chinese_api`：Android BLE 中文 API library module
 - `:sample_app`：最小文本收发示例 App
 
+当前示例已验证两台 Android 真机之间的最小文本双向收发。三台设备同时测试时，当前版本只在已建立连接/订阅关系的设备之间收发，不提供完整 mesh 转发。
+
 构建命令：
 
 ```powershell
