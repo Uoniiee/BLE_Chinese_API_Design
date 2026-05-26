@@ -372,6 +372,18 @@ class 蓝牙通信器<消息>(
     }
 
     private val Gatt服务端回调 = object : BluetoothGattServerCallback() {
+        override fun onConnectionStateChange(device: BluetoothDevice?, status: Int, newState: Int) {
+            val 设备编号 = device?.address ?: return
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                记录调试事件("服务端侧邻机已连接：$设备编号")
+                标记连接(device, 已连接 = true, 可写入 = false)
+            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                已订阅设备.remove(设备编号)
+                记录调试事件("服务端侧邻机已断开：$设备编号")
+                标记连接(device, 已连接 = false, 可写入 = false)
+            }
+        }
+
         override fun onCharacteristicWriteRequest(
             device: BluetoothDevice?,
             requestId: Int,

@@ -31,7 +31,7 @@ import java.util.Locale
 class MainActivity : Activity() {
 
     private companion object {
-        const val 示例版本 = "v0.3.5-debug"
+        const val 示例版本 = "v0.3.9-debug"
     }
 
     private val 作用域 = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -55,6 +55,7 @@ class MainActivity : Activity() {
             编解码器 = 文本消息编解码器(),
         )
         setContentView(创建界面())
+        添加设备诊断日志()
         申请权限()
         订阅通信状态()
     }
@@ -152,7 +153,8 @@ class MainActivity : Activity() {
         }
         作用域.launch {
             通信器.邻机状态流.collect { 邻机列表 ->
-                邻机文本.text = "邻机：${邻机列表.size}，可写：${邻机列表.count { it.可写入 }}"
+                val 已连接数量 = 邻机列表.count { it.已连接 }
+                邻机文本.text = "已连接：$已连接数量，可写：${邻机列表.count { it.可写入 }}"
             }
         }
         作用域.launch {
@@ -184,6 +186,44 @@ class MainActivity : Activity() {
         if (BluetoothAdapter.getDefaultAdapter()?.isEnabled == false) {
             startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
         }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 100) {
+            添加日志("诊断：权限请求结果=${permissions.zip(grantResults.toTypedArray()).joinToString { "${it.first}:${it.second == PackageManager.PERMISSION_GRANTED}" }}")
+            添加日志("诊断：当前缺失权限=${当前缺失权限().ifEmpty { listOf("无") }.joinToString()}")
+        }
+    }
+
+    private fun 添加设备诊断日志() {
+        val adapter = BluetoothAdapter.getDefaultAdapter()
+
+        添加日志("诊断：版本=$示例版本")
+        添加日志("诊断：设备=${Build.MANUFACTURER} ${Build.MODEL}，Android=${Build.VERSION.RELEASE}，SDK=${Build.VERSION.SDK_INT}")
+        添加日志("诊断：BLE支持=${packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)}，蓝牙开启=${adapter?.isEnabled == true}")
+        添加日志("诊断：多广播=${adapter?.isMultipleAdvertisementSupported == true}，硬件过滤=${adapter?.isOffloadedFilteringSupported == true}，批量扫描=${adapter?.isOffloadedScanBatchingSupported == true}")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            添加日志("诊断：扩展广播=${adapter?.isLeExtendedAdvertisingSupported == true}，2M PHY=${adapter?.isLe2MPhySupported == true}，Coded PHY=${adapter?.isLeCodedPhySupported == true}")
+        }
+        添加日志("诊断：启动前缺失权限=${当前缺失权限().ifEmpty { listOf("无") }.joinToString()}")
+    }
+
+    private fun 当前缺失权限(): List<String> {
+        val 权限 = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            listOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_ADVERTISE,
+                Manifest.permission.BLUETOOTH_CONNECT,
+            )
+        } else {
+            listOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        return 权限.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
     }
 
     private fun 添加日志(内容: String) {
