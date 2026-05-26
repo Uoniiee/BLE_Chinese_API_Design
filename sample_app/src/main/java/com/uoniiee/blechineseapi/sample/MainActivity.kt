@@ -24,14 +24,18 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : Activity() {
 
     private companion object {
-        const val 示例版本 = "v0.3.1-debug"
+        const val 示例版本 = "v0.3.5-debug"
     }
 
     private val 作用域 = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val 日志时间格式 = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
     private lateinit var 通信器: 蓝牙通信器<String>
     private lateinit var 状态文本: TextView
     private lateinit var 邻机文本: TextView
@@ -183,6 +187,6 @@ class MainActivity : Activity() {
     }
 
     private fun 添加日志(内容: String) {
-        消息列表.append("$内容\n")
+        消息列表.append("${日志时间格式.format(Date())} $内容\n")
     }
 }

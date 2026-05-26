@@ -355,7 +355,13 @@ class 蓝牙通信器<消息>(
     private fun 处理发现设备(device: BluetoothDevice?, 名称: String?) {
         if (device == null) return
         val 设备编号 = device.address ?: return
-        已发现邻机[设备编号] = 邻机记录(设备编号, 名称, 已连接 = false, 可写入 = false)
+        val 已有记录 = 已发现邻机[设备编号]
+        已发现邻机[设备编号] = 已有记录
+            ?.copy(
+                名称 = 名称 ?: 已有记录.名称,
+                最近发现时间 = System.currentTimeMillis(),
+            )
+            ?: 邻机记录(设备编号, 名称, 已连接 = false, 可写入 = false)
         记录发现邻机事件(设备编号, 名称)
         发布邻机状态()
         if (Gatt连接.containsKey(设备编号).not()) {
