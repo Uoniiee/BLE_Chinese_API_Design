@@ -28,7 +28,7 @@ import kotlinx.coroutines.runBlocking
 class MainActivity : Activity() {
 
     private companion object {
-        const val 示例版本 = "v0.3.0-debug"
+        const val 示例版本 = "v0.3.1-debug"
     }
 
     private val 作用域 = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)

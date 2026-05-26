@@ -122,6 +122,7 @@ class 蓝牙通信器<消息>(
     private val 可写连接 = ConcurrentHashMap<String, 可写邻机连接>()
     private val 已订阅设备 = ConcurrentHashMap<String, BluetoothDevice>()
     private val 已处理消息编号 = ConcurrentHashMap<String, Long>()
+    private val 最近发现日志时间 = ConcurrentHashMap<String, Long>()
 
     private val 可变连接状态流 = MutableStateFlow<连接状态>(连接状态.未启动)
     private val 可变邻机状态流 = MutableStateFlow<List<邻机状态>>(emptyList())
@@ -180,6 +181,7 @@ class 蓝牙通信器<消息>(
         可写连接.clear()
         已订阅设备.clear()
         已处理消息编号.clear()
+        最近发现日志时间.clear()
         Gatt服务端 = null
         广播回调 = null
         扫描回调 = null
@@ -354,7 +356,7 @@ class 蓝牙通信器<消息>(
         if (device == null) return
         val 设备编号 = device.address ?: return
         已发现邻机[设备编号] = 邻机记录(设备编号, 名称, 已连接 = false, 可写入 = false)
-        记录调试事件("发现邻机：${名称 ?: "未知"} $设备编号")
+        记录发现邻机事件(设备编号, 名称)
         发布邻机状态()
         if (Gatt连接.containsKey(设备编号).not()) {
             Gatt连接[设备编号] =
@@ -571,6 +573,14 @@ class 蓝牙通信器<消息>(
 
     private fun 记录调试事件(内容: String) {
         可变调试事件流.tryEmit(内容)
+    }
+
+    private fun 记录发现邻机事件(设备编号: String, 名称: String?) {
+        val 现在 = System.currentTimeMillis()
+        val 上次 = 最近发现日志时间[设备编号] ?: 0L
+        if (现在 - 上次 < 10_000L) return
+        最近发现日志时间[设备编号] = 现在
+        记录调试事件("发现邻机：${名称 ?: "未知"} $设备编号")
     }
 
     private data class 邻机记录(
