@@ -3,8 +3,10 @@ package com.uoniiee.blechineseapi.sample
 import android.Manifest
 import android.app.Activity
 import android.bluetooth.BluetoothAdapter
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
@@ -16,6 +18,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import com.uoniiee.blechineseapi.发送结果
 import com.uoniiee.blechineseapi.文本消息编解码器
+import com.uoniiee.blechineseapi.通信角色
 import com.uoniiee.blechineseapi.蓝牙通信器
 import com.uoniiee.blechineseapi.蓝牙通信配置
 import kotlinx.coroutines.CoroutineScope
@@ -31,29 +34,22 @@ import java.util.Locale
 class MainActivity : Activity() {
 
     private companion object {
-        const val 示例版本 = "v0.3.9-debug"
+        const val 示例版本 = "v0.5.6-debug"
     }
 
     private val 作用域 = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val 日志时间格式 = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
     private lateinit var 通信器: 蓝牙通信器<String>
     private lateinit var 状态文本: TextView
+    private lateinit var 角色文本: TextView
     private lateinit var 邻机文本: TextView
     private lateinit var 消息列表: TextView
     private lateinit var 输入框: EditText
+    private var 当前角色 = 通信角色.自动
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        通信器 = 蓝牙通信器(
-            context = this,
-            配置 = 蓝牙通信配置(
-                服务UUID = "f77d0a4b-2b74-4e43-a9de-6cb27a0f7a91",
-                写入UUID = "1bb5f2d4-9f73-4f47-a351-9e0d2b3517cf",
-                厂商编号 = 0x1234,
-                应用标记 = "ble-chinese-api-sample",
-            ),
-            编解码器 = 文本消息编解码器(),
-        )
+        通信器 = 创建通信器()
         setContentView(创建界面())
         添加设备诊断日志()
         申请权限()
@@ -71,7 +67,8 @@ class MainActivity : Activity() {
 
     private fun 创建界面(): LinearLayout {
         状态文本 = TextView(this).apply { text = "状态：未启动" }
-        邻机文本 = TextView(this).apply { text = "邻机：0" }
+        角色文本 = TextView(this).apply { text = "模式：自动" }
+        邻机文本 = TextView(this).apply { text = "连接通道：0，可写通道：0" }
         消息列表 = TextView(this).apply { text = "" }
         输入框 = EditText(this).apply {
             hint = "输入要发送的文本"
@@ -82,7 +79,8 @@ class MainActivity : Activity() {
             text = "启动通信"
             setOnClickListener {
                 作用域.launch {
-                    添加日志("准备启动通信；会自动清理旧通信资源")
+                    通信器.设置通信角色(当前角色)
+                    添加日志("准备启动通信；角色=$当前角色；会自动清理旧通信资源")
                     val 结果 = 通信器.启动()
                     添加日志("启动结果：$结果")
                 }
@@ -138,12 +136,26 @@ class MainActivity : Activity() {
             setPadding(32, 48, 32, 32)
             addView(TextView(this@MainActivity).apply { text = "BLE 中文 API 示例 $示例版本" })
             addView(状态文本)
+            addView(角色文本)
             addView(邻机文本)
             addView(顶部)
             addView(滚动区, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
             addView(发送栏)
         }
     }
+
+    private fun 创建通信器(): 蓝牙通信器<String> =
+        蓝牙通信器(
+            context = this,
+            配置 = 蓝牙通信配置(
+                服务UUID = "f77d0a4b-2b74-4e43-a9de-6cb27a0f7a91",
+                写入UUID = "1bb5f2d4-9f73-4f47-a351-9e0d2b3517cf",
+                厂商编号 = 0x1234,
+                应用标记 = "ble-chinese-api-sample",
+                角色 = 当前角色,
+            ),
+            编解码器 = 文本消息编解码器(),
+        )
 
     private fun 订阅通信状态() {
         作用域.launch {
@@ -154,7 +166,7 @@ class MainActivity : Activity() {
         作用域.launch {
             通信器.邻机状态流.collect { 邻机列表 ->
                 val 已连接数量 = 邻机列表.count { it.已连接 }
-                邻机文本.text = "已连接：$已连接数量，可写：${邻机列表.count { it.可写入 }}"
+                邻机文本.text = "连接通道：$已连接数量，可写通道：${邻机列表.count { it.可写入 }}"
             }
         }
         作用域.launch {
@@ -175,6 +187,7 @@ class MainActivity : Activity() {
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_ADVERTISE,
                 Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.ACCESS_FINE_LOCATION,
             )
         } else {
             listOf(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -206,11 +219,23 @@ class MainActivity : Activity() {
         添加日志("诊断：版本=$示例版本")
         添加日志("诊断：设备=${Build.MANUFACTURER} ${Build.MODEL}，Android=${Build.VERSION.RELEASE}，SDK=${Build.VERSION.SDK_INT}")
         添加日志("诊断：BLE支持=${packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)}，蓝牙开启=${adapter?.isEnabled == true}")
+        添加日志("诊断：定位服务开启=${定位服务已开启()}")
         添加日志("诊断：多广播=${adapter?.isMultipleAdvertisementSupported == true}，硬件过滤=${adapter?.isOffloadedFilteringSupported == true}，批量扫描=${adapter?.isOffloadedScanBatchingSupported == true}")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             添加日志("诊断：扩展广播=${adapter?.isLeExtendedAdvertisingSupported == true}，2M PHY=${adapter?.isLe2MPhySupported == true}，Coded PHY=${adapter?.isLeCodedPhySupported == true}")
         }
         添加日志("诊断：启动前缺失权限=${当前缺失权限().ifEmpty { listOf("无") }.joinToString()}")
+    }
+
+    private fun 定位服务已开启(): Boolean {
+        val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            locationManager.isLocationEnabled
+        } else {
+            @Suppress("DEPRECATION")
+            locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        }
     }
 
     private fun 当前缺失权限(): List<String> {
@@ -219,6 +244,7 @@ class MainActivity : Activity() {
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_ADVERTISE,
                 Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.ACCESS_FINE_LOCATION,
             )
         } else {
             listOf(Manifest.permission.ACCESS_FINE_LOCATION)
