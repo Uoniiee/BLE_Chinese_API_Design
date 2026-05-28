@@ -11,6 +11,17 @@
 - [Library 使用说明](docs/library-usage.md)
 - [Library 发布说明](docs/library-publishing.md)
 - [调试版本与测试记录](docs/release-records.md)
+- [Issue #1 可靠传输层整理计划](docs/issue-1-reliable-transport-plan.md)
+
+## 当前进行中
+
+Issue #1：可靠传输层整理与接口收敛。
+
+当前开发分支：`issue-1-reliable-transport`
+
+本阶段目标是把 v0.5.7 已验证的稳定 ID、方向仲裁、通知订阅、
+消息去重等逻辑整理进 library，并继续补充发送队列、写入串行化、
+超时失败反馈和邻机老化。
 
 ## 设计范围
 

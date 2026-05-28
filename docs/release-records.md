@@ -4,6 +4,16 @@ This file records local build artifacts, test status, and delivery notes for
 debug APK iterations. Keep it updated before sharing an APK or pushing a
 validated milestone.
 
+## Issue #1 reliable transport layer
+
+- Branch: `issue-1-reliable-transport`
+- Goal: move the validated v0.5.7 discovery, identity, direction arbitration,
+  notification subscription, and message deduplication behavior into the
+  reusable library surface.
+- Planned additions: write queue, `onCharacteristicWrite` serialization,
+  timeout/error feedback, peer aging, and updated usage notes.
+- Status: implementation planning started.
+
 ## v0.5.7-debug
 
 - Source commit: `41cd566 Document validated v0.5.7 sample state`
