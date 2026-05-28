@@ -19,6 +19,7 @@ import android.widget.TextView
 import com.uoniiee.blechineseapi.发送结果
 import com.uoniiee.blechineseapi.文本消息编解码器
 import com.uoniiee.blechineseapi.通信角色
+import com.uoniiee.blechineseapi.连接状态
 import com.uoniiee.blechineseapi.蓝牙通信器
 import com.uoniiee.blechineseapi.蓝牙通信配置
 import kotlinx.coroutines.CoroutineScope
@@ -34,7 +35,7 @@ import java.util.Locale
 class MainActivity : Activity() {
 
     private companion object {
-        const val 示例版本 = "v0.5.6-debug"
+        const val 示例版本 = "v0.5.7-debug"
     }
 
     private val 作用域 = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -160,7 +161,7 @@ class MainActivity : Activity() {
     private fun 订阅通信状态() {
         作用域.launch {
             通信器.连接状态流.collect { 状态 ->
-                状态文本.text = "状态：$状态"
+                状态文本.text = "状态：${状态.显示名称()}"
             }
         }
         作用域.launch {
@@ -255,4 +256,13 @@ class MainActivity : Activity() {
     private fun 添加日志(内容: String) {
         消息列表.append("${日志时间格式.format(Date())} $内容\n")
     }
+
+    private fun 连接状态.显示名称(): String =
+        when (this) {
+            连接状态.未启动 -> "未启动"
+            连接状态.启动中 -> "启动中"
+            连接状态.扫描广播中 -> "扫描广播中"
+            is 连接状态.已连接 -> "已连接"
+            is 连接状态.出错 -> "出错(原因=$原因)"
+        }
 }

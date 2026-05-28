@@ -62,7 +62,7 @@ sealed interface 连接状态 {
     data object 未启动 : 连接状态
     data object 启动中 : 连接状态
     data object 扫描广播中 : 连接状态
-    data class 已连接(val 邻机数量: Int) : 连接状态
+    data class 已连接(val 连接通道数量: Int) : 连接状态
     data class 出错(val 原因: String) : 连接状态
 }
 
