@@ -36,11 +36,13 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.ArrayDeque
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 data class 蓝牙通信配置(
     val 服务UUID: String,
@@ -138,6 +140,7 @@ class 蓝牙通信器<消息>(
     private val 可写连接 = ConcurrentHashMap<String, 可写邻机连接>()
     private val 已订阅设备 = ConcurrentHashMap<String, BluetoothDevice>()
     private val 已处理消息编号 = ConcurrentHashMap<String, Long>()
+    private val 发送序号 = AtomicLong(System.currentTimeMillis())
     private val 最近发现日志时间 = ConcurrentHashMap<String, Long>()
     private var 扫描总数 = 0
     private var 匹配总数 = 0
@@ -246,12 +249,14 @@ class 蓝牙通信器<消息>(
     }
 
     override suspend fun 发送(消息: 消息): 发送结果 {
-        val 载荷 = 编解码器.编码(消息)
+        val 原始载荷 = 编解码器.编码(消息)
+        val 载荷 = 编码传输帧(原始载荷)
+        val 消息编号 = 解码传输帧(载荷).消息编号 ?: 载荷.消息编号()
         记录调试事件("准备发送：${载荷.size} 字节")
         if (载荷.size > 配置.最大载荷字节数) {
             return 发送结果.失败("消息过大：${载荷.size} 字节，当前上限 ${配置.最大载荷字节数} 字节")
         }
-        已处理消息编号[载荷.消息编号()] = System.currentTimeMillis()
+        已处理消息编号[消息编号] = System.currentTimeMillis()
         清理旧消息编号()
 
         val 连接列表 = 可写连接.values.toList()
@@ -780,16 +785,49 @@ class 蓝牙通信器<消息>(
     }
 
     private fun 处理收到载荷(载荷: ByteArray, 来源设备编号: String?) {
-        val 消息编号 = 载荷.消息编号()
+        val 传输帧 = 解码传输帧(载荷)
+        val 消息编号 = 传输帧.消息编号 ?: 载荷.消息编号()
         if (已处理消息编号.putIfAbsent(消息编号, System.currentTimeMillis()) != null) return
         清理旧消息编号()
 
-        编解码器.解码(载荷).onSuccess { 消息 ->
+        编解码器.解码(传输帧.原始载荷).onSuccess { 消息 ->
             作用域.launch { 可变收到消息流.emit(消息) }
         }
         if (配置.启用中继转发) {
             中继转发(载荷, 来源设备编号)
         }
+    }
+
+    private fun 编码传输帧(原始载荷: ByteArray): ByteArray {
+        val 发送者 = 本机稳定编号.toByteArray(StandardCharsets.UTF_8)
+        val 序号 = 发送序号.incrementAndGet()
+        val 缓冲区 = ByteBuffer.allocate(传输帧标记.size + 1 + 发送者.size + Long.SIZE_BYTES + 原始载荷.size)
+        缓冲区.put(传输帧标记)
+        缓冲区.put(发送者.size.toByte())
+        缓冲区.put(发送者)
+        缓冲区.putLong(序号)
+        缓冲区.put(原始载荷)
+        return 缓冲区.array()
+    }
+
+    private fun 解码传输帧(载荷: ByteArray): 传输帧 {
+        if (载荷.size <= 传输帧标记.size + 1 + Long.SIZE_BYTES) {
+            return 传输帧(null, 载荷)
+        }
+        if (!载荷.copyOfRange(0, 传输帧标记.size).contentEquals(传输帧标记)) {
+            return 传输帧(null, 载荷)
+        }
+        val 发送者长度 = 载荷[传输帧标记.size].toInt() and 0xff
+        val 发送者起点 = 传输帧标记.size + 1
+        val 发送者终点 = 发送者起点 + 发送者长度
+        val 序号终点 = 发送者终点 + Long.SIZE_BYTES
+        if (发送者长度 <= 0 || 序号终点 > 载荷.size) {
+            return 传输帧(null, 载荷)
+        }
+        val 发送者 = String(载荷, 发送者起点, 发送者长度, StandardCharsets.UTF_8)
+        val 序号 = ByteBuffer.wrap(载荷, 发送者终点, Long.SIZE_BYTES).long
+        val 原始载荷 = 载荷.copyOfRange(序号终点, 载荷.size)
+        return 传输帧("$发送者:$序号", 原始载荷)
     }
 
     private fun 中继转发(载荷: ByteArray, 来源设备编号: String?) {
@@ -923,6 +961,11 @@ class 蓝牙通信器<消息>(
         val 来源: String,
     )
 
+    private data class 传输帧(
+        val 消息编号: String?,
+        val 原始载荷: ByteArray,
+    )
+
     private class 可写邻机连接(
         val 设备编号: String,
         val gatt: BluetoothGatt,
@@ -937,5 +980,9 @@ class 蓝牙通信器<消息>(
         var 剩余重试次数: Int = 1,
     ) {
         val 结果 = CompletableDeferred<发送结果>()
+    }
+
+    private companion object {
+        val 传输帧标记: ByteArray = "BCAPI1".toByteArray(StandardCharsets.US_ASCII)
     }
 }
