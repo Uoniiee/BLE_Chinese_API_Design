@@ -253,8 +253,9 @@ class 蓝牙通信器<消息>(
         val 载荷 = 编码传输帧(原始载荷)
         val 消息编号 = 解码传输帧(载荷).消息编号 ?: 载荷.消息编号()
         记录调试事件("准备发送：${载荷.size} 字节")
-        if (载荷.size > 配置.最大载荷字节数) {
-            return 发送结果.失败("消息过大：${载荷.size} 字节，当前上限 ${配置.最大载荷字节数} 字节")
+        val 单包上限 = minOf(配置.最大载荷字节数, 单包安全上限)
+        if (载荷.size > 单包上限) {
+            return 发送结果.失败("消息过大：${载荷.size} 字节，当前单包上限 ${单包上限} 字节")
         }
         已处理消息编号[消息编号] = System.currentTimeMillis()
         清理旧消息编号()
@@ -799,34 +800,23 @@ class 蓝牙通信器<消息>(
     }
 
     private fun 编码传输帧(原始载荷: ByteArray): ByteArray {
-        val 发送者 = 本机稳定编号.toByteArray(StandardCharsets.UTF_8)
-        val 序号 = 发送序号.incrementAndGet()
-        val 缓冲区 = ByteBuffer.allocate(传输帧标记.size + 1 + 发送者.size + Long.SIZE_BYTES + 原始载荷.size)
+        val 发送者 = 本机稳定编号.短编号字节()
+        val 序号 = 发送序号.incrementAndGet().toInt()
+        val 缓冲区 = ByteBuffer.allocate(传输帧头长度 + 原始载荷.size)
         缓冲区.put(传输帧标记)
-        缓冲区.put(发送者.size.toByte())
         缓冲区.put(发送者)
-        缓冲区.putLong(序号)
+        缓冲区.putInt(序号)
         缓冲区.put(原始载荷)
         return 缓冲区.array()
     }
 
     private fun 解码传输帧(载荷: ByteArray): 传输帧 {
-        if (载荷.size <= 传输帧标记.size + 1 + Long.SIZE_BYTES) {
+        if (载荷.size < 传输帧头长度 || 载荷[0] != 传输帧标记) {
             return 传输帧(null, 载荷)
         }
-        if (!载荷.copyOfRange(0, 传输帧标记.size).contentEquals(传输帧标记)) {
-            return 传输帧(null, 载荷)
-        }
-        val 发送者长度 = 载荷[传输帧标记.size].toInt() and 0xff
-        val 发送者起点 = 传输帧标记.size + 1
-        val 发送者终点 = 发送者起点 + 发送者长度
-        val 序号终点 = 发送者终点 + Long.SIZE_BYTES
-        if (发送者长度 <= 0 || 序号终点 > 载荷.size) {
-            return 传输帧(null, 载荷)
-        }
-        val 发送者 = String(载荷, 发送者起点, 发送者长度, StandardCharsets.UTF_8)
-        val 序号 = ByteBuffer.wrap(载荷, 发送者终点, Long.SIZE_BYTES).long
-        val 原始载荷 = 载荷.copyOfRange(序号终点, 载荷.size)
+        val 发送者 = 载荷.copyOfRange(1, 3).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        val 序号 = ByteBuffer.wrap(载荷, 3, Int.SIZE_BYTES).int.toLong() and 0xffffffffL
+        val 原始载荷 = 载荷.copyOfRange(传输帧头长度, 载荷.size)
         return 传输帧("$发送者:$序号", 原始载荷)
     }
 
@@ -841,8 +831,13 @@ class 蓝牙通信器<消息>(
 
     private fun ByteArray.消息编号(): String {
         val 摘要 = MessageDigest.getInstance("SHA-256").digest(this)
-        return 摘要.joinToString("") { "%02x".format(it) }
+        return 摘要.joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
+
+    private fun String.短编号字节(): ByteArray =
+        MessageDigest.getInstance("SHA-256")
+            .digest(toByteArray(StandardCharsets.UTF_8))
+            .copyOfRange(0, 2)
 
     private fun 清理旧消息编号() {
         if (已处理消息编号.size < 512) return
@@ -983,6 +978,8 @@ class 蓝牙通信器<消息>(
     }
 
     private companion object {
-        val 传输帧标记: ByteArray = "BCAPI1".toByteArray(StandardCharsets.US_ASCII)
+        const val 传输帧标记: Byte = 0x7f
+        const val 传输帧头长度: Int = 7
+        const val 单包安全上限: Int = 20
     }
 }
