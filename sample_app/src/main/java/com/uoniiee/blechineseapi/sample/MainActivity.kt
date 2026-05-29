@@ -35,7 +35,7 @@ import java.util.Locale
 class MainActivity : Activity() {
 
     private companion object {
-        const val 示例版本 = "v0.5.8-debug"
+        const val 示例版本 = "v0.5.9-debug"
     }
 
     private val 作用域 = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
