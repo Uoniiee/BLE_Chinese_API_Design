@@ -145,6 +145,7 @@ class 蓝牙通信器<消息>(
     private val 已订阅设备 = ConcurrentHashMap<String, BluetoothDevice>()
     private val 已处理消息编号 = ConcurrentHashMap<String, Long>()
     private val 发送序号 = AtomicLong(System.currentTimeMillis())
+    private val 发送诊断序号 = AtomicLong(0)
     private val 最近发现日志时间 = ConcurrentHashMap<String, Long>()
     private var 扫描总数 = 0
     private var 匹配总数 = 0
@@ -256,9 +257,13 @@ class 蓝牙通信器<消息>(
         val 原始载荷 = 编解码器.编码(消息)
         val 载荷 = 编码传输帧(原始载荷)
         val 消息编号 = 解码传输帧(载荷).消息编号 ?: 载荷.消息编号()
+        val 诊断编号 = 发送诊断序号.incrementAndGet()
+        val 发送开始时间 = System.currentTimeMillis()
         记录调试事件("准备发送：${载荷.size} 字节")
+        记录调试事件("[SEND#$诊断编号] start size=${载荷.size} msg=$消息编号 ${通道诊断文本()}")
         val 单包上限 = minOf(配置.最大载荷字节数, 单包安全上限)
         if (载荷.size > 单包上限) {
+            记录调试事件("[SEND#$诊断编号] result=too_large size=${载荷.size} limit=$单包上限")
             return 发送结果.失败("消息过大：${载荷.size} 字节，当前单包上限 ${单包上限} 字节")
         }
         已处理消息编号[消息编号] = System.currentTimeMillis()
@@ -268,49 +273,68 @@ class 蓝牙通信器<消息>(
         val 失败原因 = mutableListOf<String>()
         var 已成功发送 = false
 
+        val 通知开始时间 = System.currentTimeMillis()
         val 通知结果 = 通知已订阅邻机(载荷, 排除设备编号 = null)
+        记录调试事件(
+            "[SEND#$诊断编号] notify=${通知结果.诊断文本()} cost=${System.currentTimeMillis() - 通知开始时间}ms ${通道诊断文本()}"
+        )
         if (通知结果 == 发送结果.已写入) 已成功发送 = true
         if (通知结果 is 发送结果.失败) 失败原因 += "通知:${通知结果.原因}"
 
         if (通知结果 == 发送结果.已写入) {
-            后台写入到邻机(连接列表, 载荷, 排除设备编号 = null)
+            后台写入到邻机(诊断编号, 连接列表, 载荷, 排除设备编号 = null)
         } else {
-            for ((连接, 结果) in 写入到邻机并等待(连接列表, 载荷, 排除设备编号 = null)) {
-                if (结果 == 发送结果.已写入) 已成功发送 = true
-                if (结果 is 发送结果.失败) 失败原因 += "${连接.设备编号}:${结果.原因}"
+            for (写入诊断 in 写入到邻机并等待(诊断编号, 连接列表, 载荷, 排除设备编号 = null)) {
+                if (写入诊断.结果 == 发送结果.已写入) 已成功发送 = true
+                if (写入诊断.结果 is 发送结果.失败) 失败原因 += "${写入诊断.连接.设备编号}:${写入诊断.结果.原因}"
             }
         }
 
         return if (已成功发送) {
             记录调试事件("发送请求已写出")
+            记录调试事件(
+                "[SEND#$诊断编号] result=success cost=${System.currentTimeMillis() - 发送开始时间}ms ${通道诊断文本()}"
+            )
             发送结果.已写入
         } else {
             val 原因 = 失败原因.joinToString("; ").ifBlank { "当前没有可写连接或通知订阅" }
             记录调试事件("发送失败：$原因")
+            记录调试事件(
+                "[SEND#$诊断编号] result=failed cost=${System.currentTimeMillis() - 发送开始时间}ms reason=$原因 ${通道诊断文本()}"
+            )
             发送结果.失败(原因)
         }
     }
 
     private suspend fun 写入到邻机并等待(
+        诊断编号: Long,
         连接列表: List<可写邻机连接>,
         载荷: ByteArray,
         排除设备编号: String?,
-    ): List<Pair<可写邻机连接, 发送结果>> = coroutineScope {
+    ): List<写入诊断结果> = coroutineScope {
         连接列表.map { 连接 ->
             async {
-                连接 to 排队写入到邻机(连接, 载荷, 排除设备编号)
+                val 开始时间 = System.currentTimeMillis()
+                val 结果 = 排队写入到邻机(连接, 载荷, 排除设备编号)
+                val 耗时 = System.currentTimeMillis() - 开始时间
+                记录调试事件("[SEND#$诊断编号] write peer=${连接.设备编号.短编号()} result=${结果.诊断文本()} cost=${耗时}ms ${通道诊断文本()}")
+                写入诊断结果(连接, 结果, 耗时)
             }
         }.awaitAll()
     }
 
     private fun 后台写入到邻机(
+        诊断编号: Long,
         连接列表: List<可写邻机连接>,
         载荷: ByteArray,
         排除设备编号: String?,
     ) {
         连接列表.forEach { 连接 ->
             作用域.launch {
+                val 开始时间 = System.currentTimeMillis()
                 val 结果 = 排队写入到邻机(连接, 载荷, 排除设备编号)
+                val 耗时 = System.currentTimeMillis() - 开始时间
+                记录调试事件("[SEND#$诊断编号] write-bg peer=${连接.设备编号.短编号()} result=${结果.诊断文本()} cost=${耗时}ms ${通道诊断文本()}")
                 if (结果 is 发送结果.失败 && 结果.原因 != "跳过来源设备") {
                     记录调试事件("后台写入失败：${连接.设备编号}:${结果.原因}")
                 }
@@ -983,6 +1007,23 @@ class 蓝牙通信器<消息>(
         记录调试事件("跳过连接邻机：$设备编号，当前角色=$当前通信角色，对端角色=${对端角色 ?: "未知"}")
     }
 
+    private fun 通道诊断文本(): String {
+        val 邻机列表 = 已发现邻机.values.toList()
+        val 邻机摘要 = 邻机列表.joinToString(";") { 记录 ->
+            "${记录.设备编号.短编号()}:c=${记录.已连接},w=${记录.可写入}"
+        }.ifBlank { "empty" }
+        return "channels records=${邻机列表.size} connected=${邻机列表.count { it.已连接 }} writable=${邻机列表.count { it.可写入 }} clients=${可写连接.size} subscribed=${已订阅设备.size} peers=$邻机摘要"
+    }
+
+    private fun 发送结果.诊断文本(): String =
+        when (this) {
+            发送结果.已写入 -> "success"
+            is 发送结果.失败 -> "failed(${原因})"
+        }
+
+    private fun String.短编号(): String =
+        if (length <= 4) this else takeLast(4)
+
     private data class 邻机记录(
         val 设备编号: String,
         val 名称: String?,
@@ -1002,6 +1043,12 @@ class 蓝牙通信器<消息>(
     private data class 传输帧(
         val 消息编号: String?,
         val 原始载荷: ByteArray,
+    )
+
+    private data class 写入诊断结果(
+        val 连接: 可写邻机连接,
+        val 结果: 发送结果,
+        val 耗时毫秒: Long,
     )
 
     private class 可写邻机连接(

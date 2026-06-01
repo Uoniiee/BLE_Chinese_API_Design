@@ -19,6 +19,50 @@ validated milestone.
   Samsung keyboard-overlap UI polish, and further library API cleanup before
   integrating into a real business app.
 
+## v0.6.3-debug
+
+- Source status: local diagnostic follow-up after v0.6.2.
+- GitHub branch: `issue-1-reliable-transport`
+- Build command:
+
+```powershell
+.\gradlew.bat --no-daemon --console=plain :ble_chinese_api:assembleDebug :sample_app:assembleDebug
+```
+
+- Local APK:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.3-debug.apk`
+- Local email package:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.3-debug.zip`
+
+### Implemented
+
+- Kept the v0.6.2 conservative send-path behavior: notification first, client
+  writes in the background after notification succeeds, parallel client writes
+  when notification is unavailable, and configurable write timeout.
+- Added structured library diagnostics for each business send:
+  `[SEND#] start`, `notify`, `write`, `write-bg`, and final `result`.
+- Each diagnostic line includes channel counts: peer records, connected peers,
+  writable peers, client write connections, subscribed notification peers, and
+  a short peer summary.
+- Changed the sample app into a minimal diagnostic test surface with visible
+  `[APP#]`, `[STATE]`, `[PEERS]`, `[RECV]`, and `[API]` logs.
+- Added `短测` and `连发5次` buttons so repeated short sends can be tested
+  without relying on the keyboard.
+- Increased the visible log buffer to keep a longer continuous history for
+  screenshots.
+
+### Test Focus
+
+- Two devices can send short messages in both directions after initial connect.
+- After one device stops communication, the other device's next send should
+  fail or clean up promptly instead of blocking behind stale channels.
+- After restart/reconnect, both devices can send again.
+- Repeated stop/start cycles should not make `clients` or `subscribed` grow
+  indefinitely, and the final `[SEND#] result` should match the visible app
+  result.
+- This version is intentionally diagnostic; merge the stable behavior into the
+  public Chinese API only after the log evidence is clear.
+
 ## v0.6.2-debug
 
 - Source status: local follow-up after BLE_RPS `v1.0.30` validation.
