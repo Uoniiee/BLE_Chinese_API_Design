@@ -11,8 +11,8 @@ android {
         applicationId = "com.uoniiee.blechineseapi.sample"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 62
+        versionName = "0.6.2"
     }
 
     compileOptions {

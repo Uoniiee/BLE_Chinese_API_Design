@@ -19,6 +19,52 @@ validated milestone.
   Samsung keyboard-overlap UI polish, and further library API cleanup before
   integrating into a real business app.
 
+## v0.6.2-debug
+
+- Source status: local follow-up after BLE_RPS `v1.0.30` validation.
+- GitHub branch: `issue-1-reliable-transport`
+- Build command:
+
+```powershell
+.\gradlew.bat --no-daemon --console=plain :ble_chinese_api:assembleDebug :sample_app:assembleDebug
+```
+
+- Local APK:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.2-debug.apk`
+- Local email package:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.2-debug.zip`
+
+### Implemented
+
+- `发送()` now tries GATT server notification before waiting for GATT client
+  write channels.
+- If notification succeeds, client writes are still attempted in the background
+  for cleanup/coverage, but stale write channels no longer block the business
+  send result.
+- If notification is unavailable, GATT client writes are attempted in parallel
+  instead of serially waiting behind the first stale channel.
+- GATT client write timeout is now configurable through `写入超时毫秒`, with
+  a default of 1.5 seconds instead of the previous fixed 5 seconds.
+- If a notification request is rejected by the system, the stale subscribed peer
+  is removed and peer state is updated.
+- Sample app version text and package metadata were bumped to `v0.6.2-debug`.
+
+### Why
+
+BLE_RPS testing showed that a business app should not be forced to wait for a
+stale GATT client write path when a working notification path is already
+available. Otherwise one side can receive a game message while the sender still
+waits or times out on an old channel, causing asymmetric UI state.
+
+### Test Focus
+
+- Two devices can still exchange short text messages.
+- Repeated start/stop/reconnect does not leave a stale writable channel that
+  blocks later sends.
+- `发送()` returns promptly when a notification channel is available.
+- v0.6.1 remains the accepted Issue #1 baseline; v0.6.2 is a conservative
+  stability follow-up.
+
 ## v0.6.1-debug
 
 - Source commit at delivery time: `27ffa62 Compact BLE transport frame`

@@ -28,7 +28,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,6 +56,7 @@ data class 蓝牙通信配置(
     val 最大载荷字节数: Int = 180,
     val 启用中继转发: Boolean = true,
     val 角色: 通信角色 = 通信角色.自动,
+    val 写入超时毫秒: Long = 1_500L,
 )
 
 enum class 通信角色 {
@@ -264,15 +268,18 @@ class 蓝牙通信器<消息>(
         val 失败原因 = mutableListOf<String>()
         var 已成功发送 = false
 
-        for (连接 in 连接列表) {
-            val 结果 = 排队写入到邻机(连接, 载荷, 排除设备编号 = null)
-            if (结果 == 发送结果.已写入) 已成功发送 = true
-            if (结果 is 发送结果.失败) 失败原因 += "${连接.设备编号}:${结果.原因}"
-        }
-
         val 通知结果 = 通知已订阅邻机(载荷, 排除设备编号 = null)
         if (通知结果 == 发送结果.已写入) 已成功发送 = true
         if (通知结果 is 发送结果.失败) 失败原因 += "通知:${通知结果.原因}"
+
+        if (通知结果 == 发送结果.已写入) {
+            后台写入到邻机(连接列表, 载荷, 排除设备编号 = null)
+        } else {
+            for ((连接, 结果) in 写入到邻机并等待(连接列表, 载荷, 排除设备编号 = null)) {
+                if (结果 == 发送结果.已写入) 已成功发送 = true
+                if (结果 is 发送结果.失败) 失败原因 += "${连接.设备编号}:${结果.原因}"
+            }
+        }
 
         return if (已成功发送) {
             记录调试事件("发送请求已写出")
@@ -281,6 +288,33 @@ class 蓝牙通信器<消息>(
             val 原因 = 失败原因.joinToString("; ").ifBlank { "当前没有可写连接或通知订阅" }
             记录调试事件("发送失败：$原因")
             发送结果.失败(原因)
+        }
+    }
+
+    private suspend fun 写入到邻机并等待(
+        连接列表: List<可写邻机连接>,
+        载荷: ByteArray,
+        排除设备编号: String?,
+    ): List<Pair<可写邻机连接, 发送结果>> = coroutineScope {
+        连接列表.map { 连接 ->
+            async {
+                连接 to 排队写入到邻机(连接, 载荷, 排除设备编号)
+            }
+        }.awaitAll()
+    }
+
+    private fun 后台写入到邻机(
+        连接列表: List<可写邻机连接>,
+        载荷: ByteArray,
+        排除设备编号: String?,
+    ) {
+        连接列表.forEach { 连接 ->
+            作用域.launch {
+                val 结果 = 排队写入到邻机(连接, 载荷, 排除设备编号)
+                if (结果 is 发送结果.失败 && 结果.原因 != "跳过来源设备") {
+                    记录调试事件("后台写入失败：${连接.设备编号}:${结果.原因}")
+                }
+            }
         }
     }
 
@@ -295,7 +329,7 @@ class 蓝牙通信器<消息>(
             连接.写入队列.add(待写入)
         }
         推进写入队列(连接)
-        return withTimeoutOrNull(5_000L) { 待写入.结果.await() } ?: run {
+        return withTimeoutOrNull(配置.写入超时毫秒) { 待写入.结果.await() } ?: run {
             synchronized(连接) {
                 连接.写入队列.remove(待写入)
                 if (连接.当前写入 === 待写入) {
@@ -390,7 +424,16 @@ class 蓝牙通信器<消息>(
                 @Suppress("DEPRECATION")
                 服务端.notifyCharacteristicChanged(设备, 特征, false)
             }
-            if (成功) 成功数量 += 1
+            if (成功) {
+                成功数量 += 1
+            } else {
+                val 设备编号 = 设备编号(设备)
+                if (设备编号 != null) {
+                    已订阅设备.remove(设备编号)
+                    标记连接(设备, 已连接 = true, 可写入 = false)
+                    记录调试事件("通知请求未被系统接受，移除订阅邻机：$设备编号")
+                }
+            }
         }
 
         return if (成功数量 > 0) 发送结果.已写入 else 发送结果.失败("通知请求未被系统接受")
