@@ -37,7 +37,7 @@ import java.util.Locale
 class MainActivity : Activity() {
 
     private companion object {
-        const val 示例版本 = "v0.6.5-debug"
+        const val 示例版本 = "v0.6.6-debug"
         const val 最大日志行数 = 260
     }
 

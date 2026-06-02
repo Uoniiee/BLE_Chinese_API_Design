@@ -19,6 +19,37 @@ validated milestone.
   Samsung keyboard-overlap UI polish, and further library API cleanup before
   integrating into a real business app.
 
+## v0.6.6-debug
+
+- Source status: local API update from v0.6.5 A/C diagnostic evidence.
+- GitHub branch: `issue-1-reliable-transport`
+- Build command:
+
+```powershell
+.\gradlew.bat --no-daemon --console=plain :ble_chinese_api:assembleDebug :sample_app:assembleDebug
+```
+
+- Local APK:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.6-debug.apk`
+- Local email package:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.6-debug.zip`
+
+### Implemented
+
+- Added a communication session generation. Each `启动()` creates a new session, and each `停止()` invalidates the old session immediately.
+- Bound scan, advertise, GATT server, GATT client, and write callbacks to the session that created them.
+- Late callbacks from an old session are ignored and logged as `忽略过期回调`, so they cannot restore stale peer readiness after local stop/start.
+- Guarded the write queue so an old `BluetoothGatt` callback cannot complete a new connection's pending write.
+- Added an explicit stopped-state send failure: `通信未启动`.
+
+### Test Focus
+
+- When A/C are connected and one device taps `停止通信`, that device should immediately show `ready=0 total=0 peers=empty`.
+- After local stop, the same device must not return to `[READY] ready=1` unless there is a later `[APP] start-click`.
+- If old Android callbacks arrive after stop, logs may show `忽略过期回调`; this is expected and should not change readiness.
+- Remote-side behavior from v0.6.5 still applies: after the peer stops, stale `connected=1 writable=1` physical records must not restore business `ready=1`, and `短测` must skip with `peer_not_ready`.
+- Reconnect after a manual `启动通信` should restore `ready=1`, then short sends and burst sends should work again.
+
 ## v0.6.5-debug
 
 - Source status: local API update from v0.6.4 A/C diagnostic evidence.
