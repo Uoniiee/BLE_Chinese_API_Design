@@ -33,6 +33,10 @@ validated milestone.
   `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.7-debug.apk`
 - Local email package:
   `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.7-debug.zip`
+- Sanitized email package:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.7-debug-clean.zip`
+- Package README:
+  `sample_app/PACKAGE_README.md`
 
 ### Implemented
 
