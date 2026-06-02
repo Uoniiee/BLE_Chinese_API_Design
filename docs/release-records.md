@@ -14,7 +14,7 @@ validated milestone.
   timeout/error feedback, peer aging, compact transport frame, message id
   deduplication, rotation-state retention, and updated usage notes.
 - Status: completed in `v0.6.1-debug`. Maintainer verified three-device
-  communication and paid RMB 400 for Issue #1.
+  communication for Issue #1.
 - Remaining follow-ups: MTU negotiation or fragmentation for longer messages,
   Samsung keyboard-overlap UI polish, and further library API cleanup before
   integrating into a real business app.
