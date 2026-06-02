@@ -156,6 +156,7 @@ class 蓝牙通信器<消息>(
     private val 已发现邻机 = ConcurrentHashMap<String, 邻机记录>()
     private val 地址到稳定编号 = ConcurrentHashMap<String, String>()
     private val 通道归并编号 = ConcurrentHashMap<String, String>()
+    private val 业务最近硬断开时间 = ConcurrentHashMap<String, Long>()
 
     private var Gatt服务端: BluetoothGattServer? = null
     private var 可写特征: BluetoothGattCharacteristic? = null
@@ -264,6 +265,7 @@ class 蓝牙通信器<消息>(
         最近发现日志时间.clear()
         地址到稳定编号.clear()
         通道归并编号.clear()
+        业务最近硬断开时间.clear()
         扫描总数 = 0
         匹配总数 = 0
         最近扫描诊断时间 = 0L
@@ -357,6 +359,17 @@ class 蓝牙通信器<消息>(
                 val 结果 = 排队写入到邻机(连接, 载荷, 排除设备编号)
                 val 耗时 = System.currentTimeMillis() - 开始时间
                 记录调试事件("[SEND#$诊断编号] write peer=${连接.设备编号.短编号()} result=${结果.诊断文本()} cost=${耗时}ms ${通道诊断文本()}")
+                when {
+                    结果 == 发送结果.已写入 -> 标记连接(
+                        连接.gatt.device,
+                        已连接 = true,
+                        可写入 = true,
+                        记录硬断开 = false,
+                    )
+                    结果 is 发送结果.失败 && 结果.原因 != "跳过来源设备" -> {
+                        标记失败写入路径(连接, 结果.原因)
+                    }
+                }
                 写入诊断结果(连接, 结果, 耗时)
             }
         }.awaitAll()
@@ -379,6 +392,16 @@ class 蓝牙通信器<消息>(
                 }
             }
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun 标记失败写入路径(连接: 可写邻机连接, 原因: String) {
+        可写连接.remove(连接.设备编号)
+        Gatt连接.remove(连接.设备编号)
+        记录业务硬断开(连接.设备编号, "前台写入失败:${连接.设备编号.短编号()}")
+        标记连接(连接.gatt.device, 已连接 = false, 可写入 = false, 记录硬断开 = false)
+        runCatching { 连接.gatt.disconnect() }
+        记录调试事件("移除失败写入通道：${连接.设备编号}，原因=$原因")
     }
 
     private suspend fun 排队写入到邻机(
@@ -703,6 +726,12 @@ class 蓝牙通信器<消息>(
         地址到稳定编号[地址] = 设备编号
         通道归并编号[设备编号] = 设备编号
         通道归并编号[地址] = 设备编号
+        合并业务硬断开时间(地址, 设备编号)
+        val 地址编号 = "addr-${地址.replace(":", "").takeLast(8)}"
+        if (地址编号 != 设备编号) {
+            通道归并编号[地址编号] = 设备编号
+            合并业务硬断开时间(地址编号, 设备编号)
+        }
         val 已有记录 = 已发现邻机[设备编号]
         已发现邻机[设备编号] = 已有记录
             ?.copy(
@@ -998,15 +1027,21 @@ class 蓝牙通信器<消息>(
                 val 最近断开时间 = 记录列表
                     .filter { it.曾经连接过 && !it.已连接 && !it.可写入 }
                     .maxOfOrNull { it.最近状态时间 } ?: 0L
-                val 最近状态时间 = 记录列表.maxOfOrNull { it.最近状态时间 } ?: 0L
-                val 有较新断开 = 最近断开时间 > maxOf(最近可写时间, 最近连接未可写时间)
-                val 有较新连接中 = 最近连接未可写时间 > 最近可写时间
+                val 最近硬断开时间 = (记录列表.map { it.设备编号 } + 归并编号)
+                    .mapNotNull { 业务最近硬断开时间[it] }
+                    .maxOrNull() ?: 0L
+                val 最近状态时间 = maxOf(记录列表.maxOfOrNull { it.最近状态时间 } ?: 0L, 最近硬断开时间)
+                val 最近正向时间 = maxOf(最近可写时间, 最近连接未可写时间)
+                val 有较新硬断开 = 最近硬断开时间 > 最近正向时间
+                val 有较新断开 = 最近断开时间 > 最近正向时间
+                val 有较新连接中 = 最近连接未可写时间 > maxOf(最近可写时间, 最近硬断开时间)
                 val 就绪状态 = when {
+                    有较新硬断开 -> 邻机就绪状态.最近断开
                     有较新断开 -> 邻机就绪状态.最近断开
                     有较新连接中 -> 邻机就绪状态.连接中
                     逻辑可写数量 > 0 -> 邻机就绪状态.可发送
                     逻辑连接数量 > 0 -> 邻机就绪状态.连接中
-                    最近断开时间 > 0L -> 邻机就绪状态.最近断开
+                    最近硬断开时间 > 0L || 最近断开时间 > 0L -> 邻机就绪状态.最近断开
                     else -> 邻机就绪状态.已发现
                 }
                 对手状态(
@@ -1031,6 +1066,7 @@ class 蓝牙通信器<消息>(
         } ?: return
         if (来源编号 == 稳定编号 || 通道归并编号[来源编号] == 稳定编号) return
         通道归并编号[来源编号] = 稳定编号
+        合并业务硬断开时间(来源编号, 稳定编号)
         记录调试事件("合并邻机身份：$来源编号 -> $稳定编号，来源=传输帧")
         发布邻机状态()
     }
@@ -1041,16 +1077,46 @@ class 蓝牙通信器<消息>(
         已处理消息编号.entries.removeIf { it.value < 截止时间 }
     }
 
-    private fun 标记连接(device: BluetoothDevice?, 已连接: Boolean, 可写入: Boolean) {
+    private fun 记录业务硬断开(设备编号: String, 来源: String, 时间: Long = System.currentTimeMillis()) {
+        val 业务编号 = 业务归并编号(设备编号)
+        val 上次 = 业务最近硬断开时间[业务编号] ?: 0L
+        if (时间 > 上次) {
+            业务最近硬断开时间[业务编号] = 时间
+            记录调试事件("记录业务断开：${业务编号.短编号()}，来源=$来源")
+        }
+    }
+
+    private fun 合并业务硬断开时间(来源编号: String, 目标编号: String) {
+        val 来源断开时间 = 业务最近硬断开时间.remove(来源编号) ?: return
+        val 目标断开时间 = 业务最近硬断开时间[目标编号] ?: 0L
+        if (来源断开时间 > 目标断开时间) {
+            业务最近硬断开时间[目标编号] = 来源断开时间
+        }
+    }
+
+    private fun 标记连接(
+        device: BluetoothDevice?,
+        已连接: Boolean,
+        可写入: Boolean,
+        记录硬断开: Boolean = true,
+    ) {
         val 设备编号 = 设备编号(device) ?: return
         val 现在 = System.currentTimeMillis()
-        已发现邻机[设备编号] = 已发现邻机[设备编号]
+        val 旧记录 = 已发现邻机[设备编号]
+        if (记录硬断开 &&
+            !已连接 &&
+            !可写入 &&
+            (旧记录?.曾经连接过 == true || 旧记录?.已连接 == true || 旧记录?.可写入 == true)
+        ) {
+            记录业务硬断开(设备编号, "连接回调:${设备编号.短编号()}", 现在)
+        }
+        已发现邻机[设备编号] = 旧记录
             ?.copy(
                 已连接 = 已连接,
                 可写入 = 可写入,
                 最近发现时间 = 现在,
                 最近状态时间 = 现在,
-                曾经连接过 = 已连接 || 可写入 || 已发现邻机[设备编号]?.曾经连接过 == true,
+                曾经连接过 = 已连接 || 可写入 || 旧记录.曾经连接过,
             )
             ?: 邻机记录(
                 设备编号,

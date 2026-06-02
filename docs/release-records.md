@@ -19,6 +19,35 @@ validated milestone.
   Samsung keyboard-overlap UI polish, and further library API cleanup before
   integrating into a real business app.
 
+## v0.6.5-debug
+
+- Source status: local API update from v0.6.4 A/C diagnostic evidence.
+- GitHub branch: `issue-1-reliable-transport`
+- Build command:
+
+```powershell
+.\gradlew.bat --no-daemon --console=plain :ble_chinese_api:assembleDebug :sample_app:assembleDebug
+```
+
+- Local APK:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.5-debug.apk`
+- Local email package:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.5-debug.zip`
+
+### Implemented
+
+- Persisted a merged business-peer hard-disconnect timestamp so `刚断开` is not lost when a raw Bluetooth address record ages out.
+- Merged hard-disconnect timestamps when a raw channel is later tied to a stable peer ID through advertising or transport-frame identity.
+- When notification is unavailable and a foreground client write fails, the failed write path is removed immediately and the merged peer is marked not ready.
+- Kept background write failures after a successful notification as diagnostics only; they do not by themselves downgrade readiness.
+
+### Test Focus
+
+- After one device stops communication, the other device may wait for Android's disconnect callback, but once `[READY] ready=0 ... 刚断开(...)` appears it must not drift back to `ready=1` while the peer remains stopped.
+- During that stopped period, `短测` should log `send-skip reason=peer_not_ready`; it should not keep attempting writes through a stale `w=true` channel.
+- `subscribed=0` remains acceptable when foreground `write peer=... result=success`.
+- `write-bg ... failed` after `notify=success` is acceptable as a redundant-path diagnostic if the final send result is success and messages still arrive.
+
 ## v0.6.4-debug
 
 - Source status: local API update from v0.6.3 diagnostic evidence.
