@@ -20,6 +20,7 @@ import com.uoniiee.blechineseapi.发送结果
 import com.uoniiee.blechineseapi.文本消息编解码器
 import com.uoniiee.blechineseapi.通信角色
 import com.uoniiee.blechineseapi.连接状态
+import com.uoniiee.blechineseapi.邻机就绪状态
 import com.uoniiee.blechineseapi.蓝牙通信器
 import com.uoniiee.blechineseapi.蓝牙通信配置
 import kotlinx.coroutines.CoroutineScope
@@ -36,7 +37,7 @@ import java.util.Locale
 class MainActivity : Activity() {
 
     private companion object {
-        const val 示例版本 = "v0.6.3-debug"
+        const val 示例版本 = "v0.6.4-debug"
         const val 最大日志行数 = 260
     }
 
@@ -46,12 +47,15 @@ class MainActivity : Activity() {
     private lateinit var 状态文本: TextView
     private lateinit var 角色文本: TextView
     private lateinit var 邻机文本: TextView
+    private lateinit var 对手文本: TextView
     private lateinit var 消息列表: TextView
     private lateinit var 输入框: EditText
     private var 当前角色 = 通信角色.自动
     private var 发送序号 = 0
+    private var 当前可发送 = false
     private var 上次连接状态 = ""
     private var 上次邻机摘要 = ""
+    private var 上次对手摘要 = ""
     private val 日志行列表 = mutableListOf<String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -75,7 +79,8 @@ class MainActivity : Activity() {
     private fun 创建界面(): LinearLayout {
         状态文本 = TextView(this).apply { text = "状态：未启动" }
         角色文本 = TextView(this).apply { text = "模式：自动" }
-        邻机文本 = TextView(this).apply { text = "连接通道：0，可写通道：0" }
+        邻机文本 = TextView(this).apply { text = "逻辑通道：0，可写通道：0" }
+        对手文本 = TextView(this).apply { text = "对手就绪：0/0" }
         消息列表 = TextView(this).apply { text = "" }
         输入框 = EditText(this).apply {
             hint = "输入短消息，例如 A1"
@@ -173,6 +178,7 @@ class MainActivity : Activity() {
             addView(状态文本)
             addView(角色文本)
             addView(邻机文本)
+            addView(对手文本)
             addView(顶部)
             addView(测试栏)
             addView(滚动区, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -212,11 +218,26 @@ class MainActivity : Activity() {
                 val 摘要 = 邻机列表.joinToString(";") {
                     "${it.设备编号.takeLast(4)}:c=${it.已连接},w=${it.可写入}"
                 }.ifBlank { "empty" }
-                邻机文本.text = "连接通道：$已连接数量，可写通道：$可写数量"
+                邻机文本.text = "逻辑通道：$已连接数量，可写通道：$可写数量"
                 val 完整摘要 = "connected=$已连接数量 writable=$可写数量 peers=$摘要"
                 if (完整摘要 != 上次邻机摘要) {
                     上次邻机摘要 = 完整摘要
                     添加日志("[PEERS] $完整摘要")
+                }
+            }
+        }
+        作用域.launch {
+            通信器.对手状态流.collect { 对手列表 ->
+                val 可发送数量 = 对手列表.count { it.可发送 }
+                当前可发送 = 可发送数量 > 0
+                val 摘要 = 对手列表.joinToString(";") {
+                    "${it.设备编号.takeLast(4)}:${it.就绪状态.显示名称()}(${it.逻辑连接通道数量}/${it.逻辑可写通道数量})"
+                }.ifBlank { "empty" }
+                对手文本.text = "对手就绪：$可发送数量/${对手列表.size} $摘要"
+                val 完整摘要 = "ready=$可发送数量 total=${对手列表.size} peers=$摘要"
+                if (完整摘要 != 上次对手摘要) {
+                    上次对手摘要 = 完整摘要
+                    添加日志("[READY] $完整摘要")
                 }
             }
         }
@@ -243,6 +264,10 @@ class MainActivity : Activity() {
         val 本次序号 = 发送序号
         val 开始时间 = System.currentTimeMillis()
         添加日志("[APP#$本次序号] send-start text=$内容")
+        if (!当前可发送) {
+            添加日志("[APP#$本次序号] send-skip reason=peer_not_ready")
+            return
+        }
         when (val 结果 = 通信器.发送(内容)) {
             发送结果.已写入 -> {
                 添加日志("[APP#$本次序号] send-result=success cost=${System.currentTimeMillis() - 开始时间}ms")
@@ -340,5 +365,13 @@ class MainActivity : Activity() {
             连接状态.扫描广播中 -> "扫描广播中"
             is 连接状态.已连接 -> "已连接"
             is 连接状态.出错 -> "出错(原因=$原因)"
+        }
+
+    private fun 邻机就绪状态.显示名称(): String =
+        when (this) {
+            邻机就绪状态.已发现 -> "已发现"
+            邻机就绪状态.连接中 -> "连接中"
+            邻机就绪状态.可发送 -> "可发送"
+            邻机就绪状态.最近断开 -> "刚断开"
         }
 }

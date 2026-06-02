@@ -19,6 +19,51 @@ validated milestone.
   Samsung keyboard-overlap UI polish, and further library API cleanup before
   integrating into a real business app.
 
+## v0.6.4-debug
+
+- Source status: local API update from v0.6.3 diagnostic evidence.
+- GitHub branch: `issue-1-reliable-transport`
+- Build command:
+
+```powershell
+.\gradlew.bat --no-daemon --console=plain :ble_chinese_api:assembleDebug :sample_app:assembleDebug
+```
+
+- Local APK:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.4-debug.apk`
+- Local email package:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.4-debug.zip`
+
+### Implemented
+
+- Added public `对手状态流`, `对手状态`, and `邻机就绪状态` so business apps can
+  observe peer readiness without interpreting raw BLE channel counts.
+- Merged scan-discovered stable IDs, Bluetooth addresses, server-side
+  connection records, client-side write records, and transport-frame sender
+  short IDs into one business peer group when enough evidence is available.
+- A peer group is only `可发送` after a writable path is current. A newer
+  disconnect or a newer connected-but-not-yet-writable record keeps the group
+  in `最近断开` or `连接中`.
+- `发送()` now gates outgoing messages through the merged ready peer state and
+  sends only through channels belonging to ready peer groups.
+- The diagnostic sample now shows `对手就绪` and logs `[READY]` transitions.
+  The app skips test sends with `send-skip reason=peer_not_ready` until a peer
+  is ready.
+
+### Test Focus
+
+- After two devices start, do not judge readiness from `[PEERS]` alone. Wait
+  for `[READY] ready=1 ... 可发送(...)` before sending.
+- During reconnect, `[READY] ... 连接中(...)` must block sends even if old raw
+  writable channels still appear in `[PEERS]`.
+- After remote stop/disconnect, the other device should move to `刚断开` or
+  otherwise `ready=0`; short sends should skip or fail instead of reporting a
+  false business success.
+- After reconnect completes and notification subscription succeeds, the peer
+  should return to `可发送`, and short text sends should work again.
+- This version still does not implement delivery ACK. `发送结果.已写入`,
+  `notify=success`, and `write=success` are request-level results only.
+
 ## v0.6.3-debug
 
 - Source status: local diagnostic follow-up after v0.6.2.
