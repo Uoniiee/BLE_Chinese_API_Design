@@ -19,6 +19,35 @@ validated milestone.
   Samsung keyboard-overlap UI polish, and further library API cleanup before
   integrating into a real business app.
 
+## v0.6.7-debug
+
+- Source status: diagnostic sample update on top of v0.6.6.
+- GitHub branch: `issue-1-reliable-transport`
+- Build command:
+
+```powershell
+.\gradlew.bat --no-daemon --console=plain :ble_chinese_api:assembleDebug :sample_app:assembleDebug
+```
+
+- Local APK:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.7-debug.apk`
+- Local email package:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.7-debug.zip`
+
+### Implemented
+
+- Added a `保存日记` button in the sample app.
+- Saved logs as UTF-8 text with version, save time, device model, Android version, and the current in-memory log lines.
+- On Android 10 and later, logs are written to the public `Downloads` collection via MediaStore; older devices fall back to the app external downloads directory.
+- Increased the sample log buffer from 260 to 1200 lines.
+
+### Test Focus
+
+- Tap `保存日记` after a test run and verify the app logs `[APP] save-log-success file=...`.
+- On Android 12/14 devices, the saved text file should appear under `Downloads` and be shareable through WeChat or a file manager.
+- The saved text file should include the visible version `v0.6.7-debug` and enough continuous `[APP]`, `[STATE]`, `[PEERS]`, `[READY]`, `[API]`, and `[RECV]` lines for diagnosis.
+- BLE behavior should remain the same as v0.6.6; this version only changes the diagnostic sample UI/log export path.
+
 ## v0.6.6-debug
 
 - Source status: local API update from v0.6.5 A/C diagnostic evidence.

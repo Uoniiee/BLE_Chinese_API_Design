@@ -3,12 +3,15 @@ package com.uoniiee.blechineseapi.sample
 import android.Manifest
 import android.app.Activity
 import android.bluetooth.BluetoothAdapter
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
@@ -16,6 +19,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import com.uoniiee.blechineseapi.发送结果
 import com.uoniiee.blechineseapi.文本消息编解码器
 import com.uoniiee.blechineseapi.通信角色
@@ -30,6 +34,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -37,12 +43,13 @@ import java.util.Locale
 class MainActivity : Activity() {
 
     private companion object {
-        const val 示例版本 = "v0.6.6-debug"
-        const val 最大日志行数 = 260
+        const val 示例版本 = "v0.6.7-debug"
+        const val 最大日志行数 = 1_200
     }
 
     private val 作用域 = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val 日志时间格式 = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+    private val 文件时间格式 = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
     private lateinit var 通信器: 蓝牙通信器<String>
     private lateinit var 状态文本: TextView
     private lateinit var 角色文本: TextView
@@ -119,6 +126,28 @@ class MainActivity : Activity() {
             }
         }
 
+        val 保存按钮 = Button(this).apply {
+            text = "保存日记"
+            setOnClickListener {
+                作用域.launch {
+                    添加日志("[APP] save-log-click")
+                    val 文件名 = 日志文件名()
+                    val 内容 = 当前日志文本()
+                    val 保存结果 = withContext(Dispatchers.IO) {
+                        runCatching { 写入日记文件(文件名, 内容) }
+                    }
+                    保存结果.onSuccess { 路径 ->
+                        添加日志("[APP] save-log-success file=$路径")
+                        Toast.makeText(this@MainActivity, "日记已保存：$路径", Toast.LENGTH_LONG).show()
+                    }.onFailure { 错误 ->
+                        val 原因 = 错误.message ?: 错误::class.java.simpleName
+                        添加日志("[APP] save-log-failed reason=$原因")
+                        Toast.makeText(this@MainActivity, "保存失败：$原因", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }
+
         val 发送按钮 = Button(this).apply {
             text = "发送"
             setOnClickListener {
@@ -147,10 +176,15 @@ class MainActivity : Activity() {
             }
         }
 
-        val 顶部 = LinearLayout(this).apply {
+        val 控制栏 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             addView(启动按钮, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(停止按钮, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+
+        val 日志栏 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(保存按钮, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(清空按钮, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
 
@@ -179,7 +213,8 @@ class MainActivity : Activity() {
             addView(角色文本)
             addView(邻机文本)
             addView(对手文本)
-            addView(顶部)
+            addView(控制栏)
+            addView(日志栏)
             addView(测试栏)
             addView(滚动区, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
             addView(发送栏)
@@ -356,6 +391,63 @@ class MainActivity : Activity() {
             日志行列表.removeAt(0)
         }
         消息列表.text = 日志行列表.joinToString(separator = "\n", postfix = "\n")
+    }
+
+    private fun 日志文件名(): String =
+        "BLE_Chinese_API_${示例版本}_${文件时间格式.format(Date())}.txt"
+
+    private fun 当前日志文本(): String {
+        val 日志快照 = 日志行列表.toList()
+        return buildString {
+            appendLine("BLE 中文 API 最小诊断日志")
+            appendLine("版本=$示例版本")
+            appendLine("保存时间=${SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())}")
+            appendLine("设备=${Build.MANUFACTURER} ${Build.MODEL}")
+            appendLine("Android=${Build.VERSION.RELEASE}, SDK=${Build.VERSION.SDK_INT}")
+            appendLine("日志行数=${日志快照.size}")
+            appendLine()
+            append(日志快照.joinToString("\n"))
+            appendLine()
+        }
+    }
+
+    private fun 写入日记文件(文件名: String, 内容: String): String {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            写入下载目录(文件名, 内容)
+        } else {
+            写入应用下载目录(文件名, 内容)
+        }
+    }
+
+    private fun 写入下载目录(文件名: String, 内容: String): String {
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, 文件名)
+            put(MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: error("无法创建下载文件")
+        return runCatching {
+            contentResolver.openOutputStream(uri)?.use { output ->
+                output.write(内容.toByteArray(Charsets.UTF_8))
+            } ?: error("无法打开输出流")
+            values.clear()
+            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+            contentResolver.update(uri, values, null, null)
+            "Downloads/$文件名"
+        }.getOrElse { 错误 ->
+            contentResolver.delete(uri, null, null)
+            throw 错误
+        }
+    }
+
+    private fun 写入应用下载目录(文件名: String, 内容: String): String {
+        val 目录 = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: filesDir
+        if (!目录.exists()) 目录.mkdirs()
+        val 文件 = File(目录, 文件名)
+        文件.writeText(内容, Charsets.UTF_8)
+        return 文件.absolutePath
     }
 
     private fun 连接状态.显示名称(): String =
