@@ -3,12 +3,15 @@ package com.uoniiee.blechineseapi.sample
 import android.Manifest
 import android.app.Activity
 import android.bluetooth.BluetoothAdapter
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
@@ -16,18 +19,23 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import com.uoniiee.blechineseapi.发送结果
 import com.uoniiee.blechineseapi.文本消息编解码器
 import com.uoniiee.blechineseapi.通信角色
 import com.uoniiee.blechineseapi.连接状态
+import com.uoniiee.blechineseapi.邻机就绪状态
 import com.uoniiee.blechineseapi.蓝牙通信器
 import com.uoniiee.blechineseapi.蓝牙通信配置
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -35,18 +43,27 @@ import java.util.Locale
 class MainActivity : Activity() {
 
     private companion object {
-        const val 示例版本 = "v0.6.1-debug"
+        const val 示例版本 = "v0.6.7-debug"
+        const val 最大日志行数 = 1_200
     }
 
     private val 作用域 = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val 日志时间格式 = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+    private val 文件时间格式 = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
     private lateinit var 通信器: 蓝牙通信器<String>
     private lateinit var 状态文本: TextView
     private lateinit var 角色文本: TextView
     private lateinit var 邻机文本: TextView
+    private lateinit var 对手文本: TextView
     private lateinit var 消息列表: TextView
     private lateinit var 输入框: EditText
     private var 当前角色 = 通信角色.自动
+    private var 发送序号 = 0
+    private var 当前可发送 = false
+    private var 上次连接状态 = ""
+    private var 上次邻机摘要 = ""
+    private var 上次对手摘要 = ""
+    private val 日志行列表 = mutableListOf<String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -69,10 +86,11 @@ class MainActivity : Activity() {
     private fun 创建界面(): LinearLayout {
         状态文本 = TextView(this).apply { text = "状态：未启动" }
         角色文本 = TextView(this).apply { text = "模式：自动" }
-        邻机文本 = TextView(this).apply { text = "连接通道：0，可写通道：0" }
+        邻机文本 = TextView(this).apply { text = "逻辑通道：0，可写通道：0" }
+        对手文本 = TextView(this).apply { text = "对手就绪：0/0" }
         消息列表 = TextView(this).apply { text = "" }
         输入框 = EditText(this).apply {
-            hint = "输入要发送的文本"
+            hint = "输入短消息，例如 A1"
             minLines = 1
         }
 
@@ -81,9 +99,9 @@ class MainActivity : Activity() {
             setOnClickListener {
                 作用域.launch {
                     通信器.设置通信角色(当前角色)
-                    添加日志("准备启动通信；角色=$当前角色；会自动清理旧通信资源")
+                    添加日志("[APP] start-click role=$当前角色")
                     val 结果 = 通信器.启动()
-                    添加日志("启动结果：$结果")
+                    添加日志("[APP] start-result=$结果")
                 }
             }
         }
@@ -92,8 +110,40 @@ class MainActivity : Activity() {
             text = "停止通信"
             setOnClickListener {
                 作用域.launch {
+                    添加日志("[APP] stop-click")
                     通信器.停止()
-                    添加日志("已停止通信")
+                    添加日志("[APP] stop-done")
+                }
+            }
+        }
+
+        val 清空按钮 = Button(this).apply {
+            text = "清空日志"
+            setOnClickListener {
+                日志行列表.clear()
+                消息列表.text = ""
+                添加设备诊断日志()
+            }
+        }
+
+        val 保存按钮 = Button(this).apply {
+            text = "保存日记"
+            setOnClickListener {
+                作用域.launch {
+                    添加日志("[APP] save-log-click")
+                    val 文件名 = 日志文件名()
+                    val 内容 = 当前日志文本()
+                    val 保存结果 = withContext(Dispatchers.IO) {
+                        runCatching { 写入日记文件(文件名, 内容) }
+                    }
+                    保存结果.onSuccess { 路径 ->
+                        添加日志("[APP] save-log-success file=$路径")
+                        Toast.makeText(this@MainActivity, "日记已保存：$路径", Toast.LENGTH_LONG).show()
+                    }.onFailure { 错误 ->
+                        val 原因 = 错误.message ?: 错误::class.java.simpleName
+                        添加日志("[APP] save-log-failed reason=$原因")
+                        Toast.makeText(this@MainActivity, "保存失败：$原因", Toast.LENGTH_LONG).show()
+                    }
                 }
             }
         }
@@ -103,22 +153,45 @@ class MainActivity : Activity() {
             setOnClickListener {
                 val 内容 = 输入框.text.toString()
                 if (内容.isBlank()) return@setOnClickListener
+                发送文本(内容, 清空输入 = true)
+            }
+        }
+
+        val 短测按钮 = Button(this).apply {
+            text = "短测"
+            setOnClickListener {
+                发送文本("T${发送序号 + 1}", 清空输入 = false)
+            }
+        }
+
+        val 连发按钮 = Button(this).apply {
+            text = "连发5次"
+            setOnClickListener {
                 作用域.launch {
-                    when (val 结果 = 通信器.发送(内容)) {
-                        发送结果.已写入 -> {
-                            添加日志("我：$内容")
-                            输入框.text.clear()
-                        }
-                        is 发送结果.失败 -> 添加日志("发送失败：${结果.原因}")
+                    repeat(5) {
+                        执行发送文本("B${发送序号 + 1}", 清空输入 = false)
+                        delay(250L)
                     }
                 }
             }
         }
 
-        val 顶部 = LinearLayout(this).apply {
+        val 控制栏 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             addView(启动按钮, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(停止按钮, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+
+        val 日志栏 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(保存按钮, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(清空按钮, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+
+        val 测试栏 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(短测按钮, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(连发按钮, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
 
         val 发送栏 = LinearLayout(this).apply {
@@ -135,11 +208,14 @@ class MainActivity : Activity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 48, 32, 32)
-            addView(TextView(this@MainActivity).apply { text = "BLE 中文 API 示例 $示例版本" })
+            addView(TextView(this@MainActivity).apply { text = "BLE 中文 API 最小诊断 $示例版本" })
             addView(状态文本)
             addView(角色文本)
             addView(邻机文本)
-            addView(顶部)
+            addView(对手文本)
+            addView(控制栏)
+            addView(日志栏)
+            addView(测试栏)
             addView(滚动区, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
             addView(发送栏)
         }
@@ -154,6 +230,7 @@ class MainActivity : Activity() {
                 厂商编号 = 0x1234,
                 应用标记 = "ble-chinese-api-sample",
                 角色 = 当前角色,
+                写入超时毫秒 = 1_500L,
             ),
             编解码器 = 文本消息编解码器(),
         )
@@ -161,23 +238,78 @@ class MainActivity : Activity() {
     private fun 订阅通信状态() {
         作用域.launch {
             通信器.连接状态流.collect { 状态 ->
-                状态文本.text = "状态：${状态.显示名称()}"
+                val 状态名称 = 状态.显示名称()
+                状态文本.text = "状态：$状态名称"
+                if (状态名称 != 上次连接状态) {
+                    上次连接状态 = 状态名称
+                    添加日志("[STATE] $状态名称")
+                }
             }
         }
         作用域.launch {
             通信器.邻机状态流.collect { 邻机列表 ->
                 val 已连接数量 = 邻机列表.count { it.已连接 }
-                邻机文本.text = "连接通道：$已连接数量，可写通道：${邻机列表.count { it.可写入 }}"
+                val 可写数量 = 邻机列表.count { it.可写入 }
+                val 摘要 = 邻机列表.joinToString(";") {
+                    "${it.设备编号.takeLast(4)}:c=${it.已连接},w=${it.可写入}"
+                }.ifBlank { "empty" }
+                邻机文本.text = "逻辑通道：$已连接数量，可写通道：$可写数量"
+                val 完整摘要 = "connected=$已连接数量 writable=$可写数量 peers=$摘要"
+                if (完整摘要 != 上次邻机摘要) {
+                    上次邻机摘要 = 完整摘要
+                    添加日志("[PEERS] $完整摘要")
+                }
+            }
+        }
+        作用域.launch {
+            通信器.对手状态流.collect { 对手列表 ->
+                val 可发送数量 = 对手列表.count { it.可发送 }
+                当前可发送 = 可发送数量 > 0
+                val 摘要 = 对手列表.joinToString(";") {
+                    "${it.设备编号.takeLast(4)}:${it.就绪状态.显示名称()}(${it.逻辑连接通道数量}/${it.逻辑可写通道数量})"
+                }.ifBlank { "empty" }
+                对手文本.text = "对手就绪：$可发送数量/${对手列表.size} $摘要"
+                val 完整摘要 = "ready=$可发送数量 total=${对手列表.size} peers=$摘要"
+                if (完整摘要 != 上次对手摘要) {
+                    上次对手摘要 = 完整摘要
+                    添加日志("[READY] $完整摘要")
+                }
             }
         }
         作用域.launch {
             通信器.收到消息流.collect { 消息 ->
-                添加日志("对端：$消息")
+                添加日志("[RECV] $消息")
             }
         }
         作用域.launch {
             通信器.调试事件流.collect { 事件 ->
-                添加日志("调试：$事件")
+                添加日志("[API] $事件")
+            }
+        }
+    }
+
+    private fun 发送文本(内容: String, 清空输入: Boolean) {
+        作用域.launch {
+            执行发送文本(内容, 清空输入)
+        }
+    }
+
+    private suspend fun 执行发送文本(内容: String, 清空输入: Boolean) {
+        发送序号 += 1
+        val 本次序号 = 发送序号
+        val 开始时间 = System.currentTimeMillis()
+        添加日志("[APP#$本次序号] send-start text=$内容")
+        if (!当前可发送) {
+            添加日志("[APP#$本次序号] send-skip reason=peer_not_ready")
+            return
+        }
+        when (val 结果 = 通信器.发送(内容)) {
+            发送结果.已写入 -> {
+                添加日志("[APP#$本次序号] send-result=success cost=${System.currentTimeMillis() - 开始时间}ms")
+                if (清空输入) 输入框.text.clear()
+            }
+            is 发送结果.失败 -> {
+                添加日志("[APP#$本次序号] send-result=failed cost=${System.currentTimeMillis() - 开始时间}ms reason=${结果.原因}")
             }
         }
     }
@@ -254,7 +386,68 @@ class MainActivity : Activity() {
     }
 
     private fun 添加日志(内容: String) {
-        消息列表.append("${日志时间格式.format(Date())} $内容\n")
+        日志行列表 += "${日志时间格式.format(Date())} $内容"
+        while (日志行列表.size > 最大日志行数) {
+            日志行列表.removeAt(0)
+        }
+        消息列表.text = 日志行列表.joinToString(separator = "\n", postfix = "\n")
+    }
+
+    private fun 日志文件名(): String =
+        "BLE_Chinese_API_${示例版本}_${文件时间格式.format(Date())}.txt"
+
+    private fun 当前日志文本(): String {
+        val 日志快照 = 日志行列表.toList()
+        return buildString {
+            appendLine("BLE 中文 API 最小诊断日志")
+            appendLine("版本=$示例版本")
+            appendLine("保存时间=${SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())}")
+            appendLine("设备=${Build.MANUFACTURER} ${Build.MODEL}")
+            appendLine("Android=${Build.VERSION.RELEASE}, SDK=${Build.VERSION.SDK_INT}")
+            appendLine("日志行数=${日志快照.size}")
+            appendLine()
+            append(日志快照.joinToString("\n"))
+            appendLine()
+        }
+    }
+
+    private fun 写入日记文件(文件名: String, 内容: String): String {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            写入下载目录(文件名, 内容)
+        } else {
+            写入应用下载目录(文件名, 内容)
+        }
+    }
+
+    private fun 写入下载目录(文件名: String, 内容: String): String {
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, 文件名)
+            put(MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: error("无法创建下载文件")
+        return runCatching {
+            contentResolver.openOutputStream(uri)?.use { output ->
+                output.write(内容.toByteArray(Charsets.UTF_8))
+            } ?: error("无法打开输出流")
+            values.clear()
+            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+            contentResolver.update(uri, values, null, null)
+            "Downloads/$文件名"
+        }.getOrElse { 错误 ->
+            contentResolver.delete(uri, null, null)
+            throw 错误
+        }
+    }
+
+    private fun 写入应用下载目录(文件名: String, 内容: String): String {
+        val 目录 = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: filesDir
+        if (!目录.exists()) 目录.mkdirs()
+        val 文件 = File(目录, 文件名)
+        文件.writeText(内容, Charsets.UTF_8)
+        return 文件.absolutePath
     }
 
     private fun 连接状态.显示名称(): String =
@@ -264,5 +457,13 @@ class MainActivity : Activity() {
             连接状态.扫描广播中 -> "扫描广播中"
             is 连接状态.已连接 -> "已连接"
             is 连接状态.出错 -> "出错(原因=$原因)"
+        }
+
+    private fun 邻机就绪状态.显示名称(): String =
+        when (this) {
+            邻机就绪状态.已发现 -> "已发现"
+            邻机就绪状态.连接中 -> "连接中"
+            邻机就绪状态.可发送 -> "可发送"
+            邻机就绪状态.最近断开 -> "刚断开"
         }
 }

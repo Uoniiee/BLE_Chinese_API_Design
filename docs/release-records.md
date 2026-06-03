@@ -14,10 +14,238 @@ validated milestone.
   timeout/error feedback, peer aging, compact transport frame, message id
   deduplication, rotation-state retention, and updated usage notes.
 - Status: completed in `v0.6.1-debug`. Maintainer verified three-device
-  communication and paid RMB 400 for Issue #1.
+  communication for Issue #1.
 - Remaining follow-ups: MTU negotiation or fragmentation for longer messages,
   Samsung keyboard-overlap UI polish, and further library API cleanup before
   integrating into a real business app.
+
+## v0.6.7-debug
+
+- Source status: diagnostic sample update on top of v0.6.6.
+- GitHub branch: `issue-1-reliable-transport`
+- Build command:
+
+```powershell
+.\gradlew.bat --no-daemon --console=plain :ble_chinese_api:assembleDebug :sample_app:assembleDebug
+```
+
+- Local APK:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.7-debug.apk`
+- Local email package:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.7-debug.zip`
+- Sanitized email package:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.7-debug-clean.zip`
+- Package README:
+  `sample_app/PACKAGE_README.md`
+
+### Implemented
+
+- Added a `保存日记` button in the sample app.
+- Saved logs as UTF-8 text with version, save time, device model, Android version, and the current in-memory log lines.
+- On Android 10 and later, logs are written to the public `Downloads` collection via MediaStore; older devices fall back to the app external downloads directory.
+- Increased the sample log buffer from 260 to 1200 lines.
+
+### Test Focus
+
+- Tap `保存日记` after a test run and verify the app logs `[APP] save-log-success file=...`.
+- On Android 12/14 devices, the saved text file should appear under `Downloads` and be shareable through WeChat or a file manager.
+- The saved text file should include the visible version `v0.6.7-debug` and enough continuous `[APP]`, `[STATE]`, `[PEERS]`, `[READY]`, `[API]`, and `[RECV]` lines for diagnosis.
+- BLE behavior should remain the same as v0.6.6; this version only changes the diagnostic sample UI/log export path.
+
+## v0.6.6-debug
+
+- Source status: local API update from v0.6.5 A/C diagnostic evidence.
+- GitHub branch: `issue-1-reliable-transport`
+- Build command:
+
+```powershell
+.\gradlew.bat --no-daemon --console=plain :ble_chinese_api:assembleDebug :sample_app:assembleDebug
+```
+
+- Local APK:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.6-debug.apk`
+- Local email package:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.6-debug.zip`
+
+### Implemented
+
+- Added a communication session generation. Each `启动()` creates a new session, and each `停止()` invalidates the old session immediately.
+- Bound scan, advertise, GATT server, GATT client, and write callbacks to the session that created them.
+- Late callbacks from an old session are ignored and logged as `忽略过期回调`, so they cannot restore stale peer readiness after local stop/start.
+- Guarded the write queue so an old `BluetoothGatt` callback cannot complete a new connection's pending write.
+- Added an explicit stopped-state send failure: `通信未启动`.
+
+### Test Focus
+
+- When A/C are connected and one device taps `停止通信`, that device should immediately show `ready=0 total=0 peers=empty`.
+- After local stop, the same device must not return to `[READY] ready=1` unless there is a later `[APP] start-click`.
+- If old Android callbacks arrive after stop, logs may show `忽略过期回调`; this is expected and should not change readiness.
+- Remote-side behavior from v0.6.5 still applies: after the peer stops, stale `connected=1 writable=1` physical records must not restore business `ready=1`, and `短测` must skip with `peer_not_ready`.
+- Reconnect after a manual `启动通信` should restore `ready=1`, then short sends and burst sends should work again.
+
+## v0.6.5-debug
+
+- Source status: local API update from v0.6.4 A/C diagnostic evidence.
+- GitHub branch: `issue-1-reliable-transport`
+- Build command:
+
+```powershell
+.\gradlew.bat --no-daemon --console=plain :ble_chinese_api:assembleDebug :sample_app:assembleDebug
+```
+
+- Local APK:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.5-debug.apk`
+- Local email package:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.5-debug.zip`
+
+### Implemented
+
+- Persisted a merged business-peer hard-disconnect timestamp so `刚断开` is not lost when a raw Bluetooth address record ages out.
+- Merged hard-disconnect timestamps when a raw channel is later tied to a stable peer ID through advertising or transport-frame identity.
+- When notification is unavailable and a foreground client write fails, the failed write path is removed immediately and the merged peer is marked not ready.
+- Kept background write failures after a successful notification as diagnostics only; they do not by themselves downgrade readiness.
+
+### Test Focus
+
+- After one device stops communication, the other device may wait for Android's disconnect callback, but once `[READY] ready=0 ... 刚断开(...)` appears it must not drift back to `ready=1` while the peer remains stopped.
+- During that stopped period, `短测` should log `send-skip reason=peer_not_ready`; it should not keep attempting writes through a stale `w=true` channel.
+- `subscribed=0` remains acceptable when foreground `write peer=... result=success`.
+- `write-bg ... failed` after `notify=success` is acceptable as a redundant-path diagnostic if the final send result is success and messages still arrive.
+
+## v0.6.4-debug
+
+- Source status: local API update from v0.6.3 diagnostic evidence.
+- GitHub branch: `issue-1-reliable-transport`
+- Build command:
+
+```powershell
+.\gradlew.bat --no-daemon --console=plain :ble_chinese_api:assembleDebug :sample_app:assembleDebug
+```
+
+- Local APK:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.4-debug.apk`
+- Local email package:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.4-debug.zip`
+
+### Implemented
+
+- Added public `对手状态流`, `对手状态`, and `邻机就绪状态` so business apps can
+  observe peer readiness without interpreting raw BLE channel counts.
+- Merged scan-discovered stable IDs, Bluetooth addresses, server-side
+  connection records, client-side write records, and transport-frame sender
+  short IDs into one business peer group when enough evidence is available.
+- A peer group is only `可发送` after a writable path is current. A newer
+  disconnect or a newer connected-but-not-yet-writable record keeps the group
+  in `最近断开` or `连接中`.
+- `发送()` now gates outgoing messages through the merged ready peer state and
+  sends only through channels belonging to ready peer groups.
+- The diagnostic sample now shows `对手就绪` and logs `[READY]` transitions.
+  The app skips test sends with `send-skip reason=peer_not_ready` until a peer
+  is ready.
+
+### Test Focus
+
+- After two devices start, do not judge readiness from `[PEERS]` alone. Wait
+  for `[READY] ready=1 ... 可发送(...)` before sending.
+- During reconnect, `[READY] ... 连接中(...)` must block sends even if old raw
+  writable channels still appear in `[PEERS]`.
+- After remote stop/disconnect, the other device should move to `刚断开` or
+  otherwise `ready=0`; short sends should skip or fail instead of reporting a
+  false business success.
+- After reconnect completes and notification subscription succeeds, the peer
+  should return to `可发送`, and short text sends should work again.
+- This version still does not implement delivery ACK. `发送结果.已写入`,
+  `notify=success`, and `write=success` are request-level results only.
+
+## v0.6.3-debug
+
+- Source status: local diagnostic follow-up after v0.6.2.
+- GitHub branch: `issue-1-reliable-transport`
+- Build command:
+
+```powershell
+.\gradlew.bat --no-daemon --console=plain :ble_chinese_api:assembleDebug :sample_app:assembleDebug
+```
+
+- Local APK:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.3-debug.apk`
+- Local email package:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.3-debug.zip`
+
+### Implemented
+
+- Kept the v0.6.2 conservative send-path behavior: notification first, client
+  writes in the background after notification succeeds, parallel client writes
+  when notification is unavailable, and configurable write timeout.
+- Added structured library diagnostics for each business send:
+  `[SEND#] start`, `notify`, `write`, `write-bg`, and final `result`.
+- Each diagnostic line includes channel counts: peer records, connected peers,
+  writable peers, client write connections, subscribed notification peers, and
+  a short peer summary.
+- Changed the sample app into a minimal diagnostic test surface with visible
+  `[APP#]`, `[STATE]`, `[PEERS]`, `[RECV]`, and `[API]` logs.
+- Added `短测` and `连发5次` buttons so repeated short sends can be tested
+  without relying on the keyboard.
+- Increased the visible log buffer to keep a longer continuous history for
+  screenshots.
+
+### Test Focus
+
+- Two devices can send short messages in both directions after initial connect.
+- After one device stops communication, the other device's next send should
+  fail or clean up promptly instead of blocking behind stale channels.
+- After restart/reconnect, both devices can send again.
+- Repeated stop/start cycles should not make `clients` or `subscribed` grow
+  indefinitely, and the final `[SEND#] result` should match the visible app
+  result.
+- This version is intentionally diagnostic; merge the stable behavior into the
+  public Chinese API only after the log evidence is clear.
+
+## v0.6.2-debug
+
+- Source status: local follow-up after BLE_RPS `v1.0.30` validation.
+- GitHub branch: `issue-1-reliable-transport`
+- Build command:
+
+```powershell
+.\gradlew.bat --no-daemon --console=plain :ble_chinese_api:assembleDebug :sample_app:assembleDebug
+```
+
+- Local APK:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.2-debug.apk`
+- Local email package:
+  `D:\Work\Aideas\BLE_Chinese_API_Design\sample_app\build\outputs\apk\debug\sample_app-v0.6.2-debug.zip`
+
+### Implemented
+
+- `发送()` now tries GATT server notification before waiting for GATT client
+  write channels.
+- If notification succeeds, client writes are still attempted in the background
+  for cleanup/coverage, but stale write channels no longer block the business
+  send result.
+- If notification is unavailable, GATT client writes are attempted in parallel
+  instead of serially waiting behind the first stale channel.
+- GATT client write timeout is now configurable through `写入超时毫秒`, with
+  a default of 1.5 seconds instead of the previous fixed 5 seconds.
+- If a notification request is rejected by the system, the stale subscribed peer
+  is removed and peer state is updated.
+- Sample app version text and package metadata were bumped to `v0.6.2-debug`.
+
+### Why
+
+BLE_RPS testing showed that a business app should not be forced to wait for a
+stale GATT client write path when a working notification path is already
+available. Otherwise one side can receive a game message while the sender still
+waits or times out on an old channel, causing asymmetric UI state.
+
+### Test Focus
+
+- Two devices can still exchange short text messages.
+- Repeated start/stop/reconnect does not leave a stale writable channel that
+  blocks later sends.
+- `发送()` returns promptly when a notification channel is available.
+- v0.6.1 remains the accepted Issue #1 baseline; v0.6.2 is a conservative
+  stability follow-up.
 
 ## v0.6.1-debug
 
