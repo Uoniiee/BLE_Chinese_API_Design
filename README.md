@@ -9,6 +9,7 @@
 - [BLE 中文 API 与 Android Library Module 设计](docs/ble-chinese-api-design.md)
 - [最小示例 App 草案](docs/minimal-sample-app.md)
 - [Library 使用说明](docs/library-usage.md)
+- [BLE 中文 API 测试说明与用例](docs/api-test-cases.md)
 - [Library 发布说明](docs/library-publishing.md)
 - [调试版本与测试记录](docs/release-records.md)
 - [Issue #1 可靠传输层整理计划](docs/issue-1-reliable-transport-plan.md)
